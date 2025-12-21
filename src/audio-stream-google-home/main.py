@@ -35,13 +35,15 @@ def startup_event():
       
     try:
         cast = pychromecast.get_chromecast_from_host((GOOGLE_HOME_IP, GOOGLE_HOME_PORT, None, None, None), tries=3, retry_wait=10)  # blocking=True waits for connection
+        cast.wait()
         mc = cast.media_controller
+        # Wait a moment for the connection to fully establish
+        time.sleep(2)
         logger.info(f"Connected to Chromecast at {GOOGLE_HOME_IP} ({cast.cast_info})")
     except Exception:
         logger.exception(f"Failed to connect to Chromecast at {GOOGLE_HOME_IP}")
         cast = None
         mc = None
-            
 
 # Ensure MP3 folder exists (create if possible)
 if not os.path.isdir(MP3_FOLDER):
@@ -80,30 +82,26 @@ def play(req: PlayRequest, request: Request):
     if not os.path.isfile(local_path):
         raise HTTPException(status_code=404, detail="Track not found")
 
-
-
     track_url = f"http://{IP_SERVER.rstrip('/')}:{PORT_SERVER}{MP3_ROUTE}/{quote(safe_filename)}"
 
-    if mc is None:
+    if mc is None or cast is None:
         raise HTTPException(status_code=503, detail="Cast device not ready")
+    
     logger.info("Waiting to play media %s", track_url)
-    # mc.block_until_active()  # Wait until the media controller is ready
     MAX_RETRIES = 5
-    for _ in range(MAX_RETRIES):
+    for attempt in range(MAX_RETRIES):
         try:
-            logger.info("Attempting to play media %s", track_url)
+            logger.info(f"Attempting to play media {track_url} (attempt {attempt + 1}/{MAX_RETRIES})")
             mc.play_media(track_url, "audio/mp3")
+            logger.info(f"Successfully sent play command for {safe_filename}")
             break
-        except pychromecast.error.NotConnected:
+        except pychromecast.error.NotConnected as e:
             logger.info("Cast not ready, retrying...")
-            time.sleep(10)
-    else:
-        raise HTTPException(status_code=503, detail="Cast device not ready")
-    try:
-        mc.play_media(track_url, "audio/mp3")
-    except Exception:
-        logger.exception("Failed to play media %s", track_url)
-        raise HTTPException(status_code=500, detail="Failed to play media")
+            if attempt < MAX_RETRIES - 1:
+                time.sleep(3)
+            else:
+                logger.exception("Failed to play media %s after retries", track_url)
+                raise HTTPException(status_code=503, detail="Cast device not ready")
 
     return {"status": "ok", "track_url": track_url}
 
