@@ -32,3 +32,13 @@ netsh interface portproxy add v4tov4 listenaddress=10.0.0.73 listenport=8801 con
 
 New-NetFirewallRule -DisplayName "WSL FastAPI" -Direction Inbound -LocalPort 8801 -Protocol TCP -Action Allow
 ```
+
+# Testing
+
+You can start the server using `make server` and then call it:
+
+```
+ curl -X POST http://10.0.0.73:8801/play \
+     -H "Content-Type: application/json" \
+     -d '{"track": "x.mp3"}'
+```

@@ -1,34 +1,42 @@
-import threading
 from fastapi import FastAPI, Request, HTTPException
+from fastapi.concurrency import asynccontextmanager
 from fastapi.staticfiles import StaticFiles
 import pychromecast
 from pydantic import BaseModel
 import os
 import time
-import zeroconf
 import logging
 from urllib.parse import quote
 from dotenv import load_dotenv
-import socket
 # Load the .env file
 load_dotenv()
 import uvicorn
 
 ENV = os.getenv("ENV", "production")
 PORT_SERVER = int(os.getenv("PORT", "8801"))
-IP_SERVER = os.getenv("IP_SERVER", "127.0.0.1")
+IP_SERVER = os.getenv("IP_SERVER", "127.0.0.1") # IP tha tthe Google Home will reach to download the MP3s
 MP3_FOLDER = os.getenv("MP3_FOLDER", "/mp3")
 GOOGLE_HOME_IP = os.getenv("GOOGLE_HOME_IP", "192.168.1.50")  # replace with your device IP
 GOOGLE_HOME_PORT = 8009
 MP3_ROUTE = "/mp3"
-print(f"Starting in {ENV} mode on {IP_SERVER}:{PORT_SERVER}, serving MP3s from {MP3_FOLDER}")
+
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+logger.info(f"Starting in {ENV} mode on {IP_SERVER}:{PORT_SERVER}, serving MP3s from {MP3_FOLDER}")
 # Chromecast globals (populated on startup)
 cast = None
 mc = None
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Init
+    startup_event()
+    yield
+    # Clean up
+    # Nothing for now
+    
 def startup_event():
     """Discover Chromecast using CastBrowser at startup."""
     global cast, mc
@@ -51,15 +59,14 @@ if not os.path.isdir(MP3_FOLDER):
         os.makedirs(MP3_FOLDER, exist_ok=True)
         logger.info("Created MP3 folder %s", MP3_FOLDER)
     except Exception as e:
-        logger.warning("MP3 folder %s missing and could not be created: %s", MP3_FOLDER, e)
+        logger.exception("MP3 folder %s missing and could not be created: %s", MP3_FOLDER, e)
 
-app = FastAPI()
+app = FastAPI(lifespan=lifespan)
 app.mount(MP3_ROUTE, StaticFiles(directory=MP3_FOLDER), name="mp3")
 
 class PlayRequest(BaseModel):
     track: str
 
-logger.info(f"Determined LAN IP address: {IP_SERVER}")
 @app.get("/")
 async def root():
     return {"status": "ok"}
@@ -79,6 +86,10 @@ def play(req: PlayRequest, request: Request):
 
     local_path = os.path.join(MP3_FOLDER, safe_filename)
     logger.info(f"Requested track: {track}, safe filename: {safe_filename}, local path: {local_path}")
+    
+    if not os.path.abspath(local_path).startswith(os.path.abspath(MP3_FOLDER)):
+        raise HTTPException(status_code=400, detail="Invalid track path")
+    
     if not os.path.isfile(local_path):
         raise HTTPException(status_code=404, detail="Track not found")
 
@@ -92,11 +103,11 @@ def play(req: PlayRequest, request: Request):
     for attempt in range(MAX_RETRIES):
         try:
             logger.info(f"Attempting to play media {track_url} (attempt {attempt + 1}/{MAX_RETRIES})")
-            mc.play_media(track_url, "audio/mp3")
+            mc.play_media(track_url, "audio/mp3", title=f"Playing {safe_filename}", subtitles=f"From audio Stream Server")
             logger.info(f"Successfully sent play command for {safe_filename}")
             break
         except pychromecast.error.NotConnected as e:
-            logger.info("Cast not ready, retrying...")
+            logger.error("Cast not ready, retrying...")
             if attempt < MAX_RETRIES - 1:
                 time.sleep(3)
             else:
@@ -105,9 +116,7 @@ def play(req: PlayRequest, request: Request):
 
     return {"status": "ok", "track_url": track_url}
 
-
-startup_event()
 if __name__ == "__main__":
 
     # Run in development mode, reload allows hot-reload when you change the code
-    uvicorn.run("main:app", host="0.0.0.0", port=PORT_SERVER, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=PORT_SERVER, reload=ENV=="development")
