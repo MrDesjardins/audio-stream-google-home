@@ -7,16 +7,32 @@ import os
 import time
 import logging
 from urllib.parse import quote
-from dotenv import load_dotenv
-# Load the .env file
-load_dotenv()
 import uvicorn
+from dotenv import load_dotenv
+from pathlib import Path
 
-ENV = os.getenv("ENV", "production")
-PORT_SERVER = int(os.getenv("PORT", "8801"))
-IP_SERVER = os.getenv("IP_SERVER", "127.0.0.1") # IP tha tthe Google Home will reach to download the MP3s
-MP3_FOLDER = os.getenv("MP3_FOLDER", "/mp3")
-GOOGLE_HOME_IP = os.getenv("GOOGLE_HOME_IP", "192.168.1.50")  # replace with your device IP
+# Load the .env file explicitly from the repository root (works regardless of CWD).
+# File location: src/audio-stream-google-home/main.py -> parents[2] is the repo root.
+env_path = Path(__file__).resolve().parents[2] / ".env"
+if env_path.exists():
+    load_dotenv(dotenv_path=env_path, verbose=True)
+else:
+    # Fallback to default search behavior
+    load_dotenv(verbose=True)
+
+ENV = os.getenv("AB_ENV", "production")
+PORT_SERVER = int(os.getenv("AB_PORT_SERVER", "8801"))
+IP_SERVER = os.getenv("AB_IP_SERVER", "127.0.0.1") # IP that the Google Home will reach to download the MP3s
+
+# Determine MP3 folder: prefer `AB_MP3_FOLDER` from env; otherwise use repo-relative `mp3`.
+repo_root = Path(__file__).resolve().parents[2]
+default_mp3 = repo_root / "mp3"
+MP3_FOLDER = os.getenv("AB_MP3_FOLDER")
+if MP3_FOLDER:
+    MP3_FOLDER = MP3_FOLDER
+else:
+    MP3_FOLDER = str(default_mp3)
+GOOGLE_HOME_IP = os.getenv("AB_GOOGLE_HOME_IP", "192.168.1.50")  # replace with your device IP
 GOOGLE_HOME_PORT = 8009
 MP3_ROUTE = "/mp3"
 
@@ -32,14 +48,14 @@ mc = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Init
-    startup_event()
+    startup_event(app)
     yield
     # Clean up
     # Nothing for now
-    
-def startup_event():
+
+def startup_event(app: FastAPI):
     """Discover Chromecast using CastBrowser at startup."""
-    global cast, mc
+    global cast, mc, MP3_FOLDER
       
     try:
         cast = pychromecast.get_chromecast_from_host((GOOGLE_HOME_IP, GOOGLE_HOME_PORT, None, None, None), tries=3, retry_wait=10)  # blocking=True waits for connection
@@ -53,16 +69,24 @@ def startup_event():
         cast = None
         mc = None
 
-# Ensure MP3 folder exists (create if possible)
-if not os.path.isdir(MP3_FOLDER):
-    try:
-        os.makedirs(MP3_FOLDER, exist_ok=True)
-        logger.info("Created MP3 folder %s", MP3_FOLDER)
-    except Exception as e:
-        logger.exception("MP3 folder %s missing and could not be created: %s", MP3_FOLDER, e)
+    # Ensure MP3 folder exists (create if possible)
+    if not os.path.isdir(MP3_FOLDER):
+        try:
+            os.makedirs(MP3_FOLDER, exist_ok=True)
+            logger.info("Created MP3 folder %s", MP3_FOLDER)
+        except PermissionError:
+            # If we can't create the requested folder (e.g., '/mp3'), fall back to repo-relative mp3
+            try:
+                MP3_FOLDER = str(default_mp3)
+                os.makedirs(MP3_FOLDER, exist_ok=True)
+                logger.warning("Permission denied creating requested MP3 folder; using %s instead", MP3_FOLDER)
+            except Exception as e:
+                logger.exception("Failed to create fallback MP3 folder %s: %s", MP3_FOLDER, e)
+        except Exception as e:
+            logger.exception("MP3 folder %s missing and could not be created: %s", MP3_FOLDER, e)
+    app.mount(MP3_ROUTE, StaticFiles(directory=MP3_FOLDER), name="mp3")
 
 app = FastAPI(lifespan=lifespan)
-app.mount(MP3_ROUTE, StaticFiles(directory=MP3_FOLDER), name="mp3")
 
 class PlayRequest(BaseModel):
     track: str

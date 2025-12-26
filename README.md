@@ -42,3 +42,9 @@ You can start the server using `make server` and then call it:
      -H "Content-Type: application/json" \
      -d '{"track": "x.mp3"}'
 ```
+
+# Service
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now audio-book.service
+sudo journalctl -u audio-book -n 100 -f

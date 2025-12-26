@@ -1,0 +1,36 @@
+[Unit]
+Description=Audio Book Service for Jacob
+After=network-online.target local-fs.target
+Wants=network-online.target
+Requires=network.target local-fs.target
+
+[Service]
+# Directory where your bot lives
+WorkingDirectory= /home/pdesjardins/code/audio-stream-google-home
+
+# Use your virtual environment Python binaries
+ExecStart=/home/pdesjardins/.local/bin/uv run /home/pdesjardins/code/audio-stream-google-home/src/main.py
+
+
+# Restart on failure
+Restart=on-failure
+RestartSec=10
+
+# IAM
+User=pdesjardins
+Group=pdesjardins
+
+# Include /etc/environment and add virtualenv + system binaries to PATH
+EnvironmentFile=/etc/environment
+
+# Optional: direct stdout/stderr to journal
+StandardOutput=journal
+StandardError=journal
+
+# Full access to filesystem / shm
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=false
+
+[Install]
+WantedBy=multi-user.target
