@@ -63,14 +63,18 @@ sudo systemctl restart audio-book.service
 sudo journalctl -u audio-book -n 100 -f
 ```
 
+# Example of HTTP Requests
+
+```sh
 curl -X POST http://10.0.0.181:8801/play \
      -H "Content-Type: application/json" \
      -d '{"track": "x.mp3"}'
 
 
-     curl -X POST http://localhost:8801/play \
-     -H "Content-Type: application/json" \
-     -d '{"track": "x"}'
+curl -X POST http://localhost:8801/play \
+-H "Content-Type: application/json" \
+-d '{"track": "x"}'
+```
 
 # Debug
 
