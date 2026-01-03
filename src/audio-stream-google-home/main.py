@@ -90,13 +90,30 @@ app = FastAPI(lifespan=lifespan)
 
 class PlayRequest(BaseModel):
     track: str
-
+    
+def get_mp3_file_names():
+    try:
+        files = [f[:-4] for f in os.listdir(MP3_FOLDER) if os.path.isfile(os.path.join(MP3_FOLDER, f)) and f.lower().endswith('.mp3')]
+        return files
+    except Exception as e:
+        logger.exception("Failed to list tracks in %s: %s", MP3_FOLDER, e)
+        return []
+    
 @app.get("/")
 async def root():
     return {"status": "ok"}
 
+@app.get("/list")
+def list_tracks():
+    """List available MP3 files in the MP3_FOLDER."""
+    try:
+        files = get_mp3_file_names()
+        return {"tracks": files}
+    except Exception as e:
+        logger.exception("Failed to list tracks in %s: %s", MP3_FOLDER, e)
+        raise HTTPException(status_code=500, detail="Failed to list tracks")
 
-@app.post("/play")
+@app.post("/play") 
 def play(req: PlayRequest, request: Request):
     """Play an MP3 file by filename (track).
 
@@ -105,19 +122,19 @@ def play(req: PlayRequest, request: Request):
     """
     track = req.track
     safe_filename = os.path.basename(track)
+    safe_filename_with_ext = safe_filename + ".mp3"
     if not safe_filename:
         raise HTTPException(status_code=400, detail="Invalid track name")
-
-    local_path = os.path.join(MP3_FOLDER, safe_filename)
-    logger.info(f"Requested track: {track}, safe filename: {safe_filename}, local path: {local_path}")
-    
-    if not os.path.abspath(local_path).startswith(os.path.abspath(MP3_FOLDER)):
-        raise HTTPException(status_code=400, detail="Invalid track path")
-    
+    files = get_mp3_file_names()
+    if safe_filename not in files:
+        raise HTTPException(status_code=404, detail="Track not found")
+    local_path = os.path.join(MP3_FOLDER, safe_filename_with_ext)
+    logger.info(f"Requested track: {track}, safe filename: {safe_filename_with_ext}, local path: {local_path}")
+        
     if not os.path.isfile(local_path):
         raise HTTPException(status_code=404, detail="Track not found")
 
-    track_url = f"http://{IP_SERVER.rstrip('/')}:{PORT_SERVER}{MP3_ROUTE}/{quote(safe_filename)}"
+    track_url = f"http://{IP_SERVER.rstrip('/')}:{PORT_SERVER}{MP3_ROUTE}/{quote(safe_filename_with_ext)}"
 
     if mc is None or cast is None:
         raise HTTPException(status_code=503, detail="Cast device not ready")

@@ -33,6 +33,14 @@ netsh interface portproxy add v4tov4 listenaddress=10.0.0.73 listenport=8801 con
 New-NetFirewallRule -DisplayName "WSL FastAPI" -Direction Inbound -LocalPort 8801 -Protocol TCP -Action Allow
 ```
 
+# Network Server
+Make sure the IP and PORT on the machine are accessible
+
+```sh
+sudo ufw allow 8801/tcp
+sudo ufw reload
+```
+
 # Testing
 
 You can start the server using `make server` and then call it:
@@ -45,6 +53,17 @@ You can start the server using `make server` and then call it:
 
 # Service
 
+sudo cp systemd/audio-book.service /etc/systemd/system/audio-book.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now audio-book.service
 sudo journalctl -u audio-book -n 100 -f
+
+
+curl -X POST http://10.0.0.181:8801/play \
+     -H "Content-Type: application/json" \
+     -d '{"track": "x.mp3"}'
+
+
+     curl -X POST http://localhost:8801/play \
+     -H "Content-Type: application/json" \
+     -d '{"track": "x"}'

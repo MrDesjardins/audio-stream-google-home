@@ -9,7 +9,7 @@ Requires=network.target local-fs.target
 WorkingDirectory= /home/pdesjardins/code/audio-stream-google-home
 
 # Use your virtual environment Python binaries
-ExecStart=/home/pdesjardins/.local/bin/uv run /home/pdesjardins/code/audio-stream-google-home/src/main.py
+ExecStart=/home/pdesjardins/.local/bin/uv run /home/pdesjardins/code/audio-stream-google-home/src/audio-stream-google-home/main.py
 
 
 # Restart on failure
