@@ -52,12 +52,16 @@ You can start the server using `make server` and then call it:
 ```
 
 # Service
-
+```
 sudo cp systemd/audio-book.service /etc/systemd/system/audio-book.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now audio-book.service
-sudo journalctl -u audio-book -n 100 -f
 
+sudo systemctl start audio-book.service
+sudo systemctl stop audio-book.service
+sudo systemctl restart audio-book.service
+sudo journalctl -u audio-book -n 100 -f
+```
 
 curl -X POST http://10.0.0.181:8801/play \
      -H "Content-Type: application/json" \
@@ -67,3 +71,12 @@ curl -X POST http://10.0.0.181:8801/play \
      curl -X POST http://localhost:8801/play \
      -H "Content-Type: application/json" \
      -d '{"track": "x"}'
+
+# Debug
+
+Check if we can access the Google Home:
+
+```sh
+ping 10.0.0.88
+nc -zv 10.0.0.88 8009
+```

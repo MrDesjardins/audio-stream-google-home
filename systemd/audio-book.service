@@ -10,7 +10,9 @@ WorkingDirectory= /home/pdesjardins/code/audio-stream-google-home
 
 # Use your virtual environment Python binaries
 ExecStart=/home/pdesjardins/.local/bin/uv run /home/pdesjardins/code/audio-stream-google-home/src/audio-stream-google-home/main.py
-
+ExecStartPre=/bin/sleep 5
+ExecStartPre=/usr/bin/ip addr
+ExecStartPre=/usr/bin/ip route
 
 # Restart on failure
 Restart=on-failure
@@ -27,9 +29,8 @@ EnvironmentFile=/etc/environment
 StandardOutput=journal
 StandardError=journal
 
-# Full access to filesystem / shm
-PrivateTmp=true
-ProtectSystem=full
+PrivateTmp=false
+ProtectSystem=off
 ProtectHome=false
 
 [Install]
