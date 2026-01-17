@@ -108,6 +108,8 @@ def list_tracks():
     """List available MP3 files in the MP3_FOLDER."""
     try:
         files = get_mp3_file_names()
+        # Order alphabetically
+        files.sort()
         return {"tracks": files}
     except Exception as e:
         logger.exception("Failed to list tracks in %s: %s", MP3_FOLDER, e)
