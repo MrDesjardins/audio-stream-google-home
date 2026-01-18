@@ -166,6 +166,14 @@ def play(req: PlayRequest, request: Request):
     if mc is None or cast is None:
         raise HTTPException(status_code=503, detail="Cast device not ready")
     
+    # Stop any currently playing media first
+    try:
+        mc.stop()
+        logger.info(f"Stopped any existing playback on {device_ip}")
+        time.sleep(1)  # Give the device a moment to stop
+    except Exception as e:
+        logger.warning(f"Could not stop existing playback (may not be playing anything): {e}")
+
     logger.info("Waiting to play media %s", track_url)
     MAX_RETRIES = 5
     for attempt in range(MAX_RETRIES):
