@@ -22,8 +22,8 @@ RestartSec=10
 User=pdesjardins
 Group=pdesjardins
 
-# Include /etc/environment and add virtualenv + system binaries to PATH
-EnvironmentFile=/etc/environment
+# Load environment variables from .env file in the repository
+EnvironmentFile=-/home/pdesjardins/code/audio-stream-google-home/.env
 
 # Optional: direct stdout/stderr to journal
 StandardOutput=journal

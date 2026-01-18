@@ -32,10 +32,17 @@ if MP3_FOLDER:
     MP3_FOLDER = MP3_FOLDER
 else:
     MP3_FOLDER = str(default_mp3)
-GOOGLE_HOME_IP = os.getenv("AB_GOOGLE_HOME_IP", "192.168.1.50")  # replace with your device IP
+
 GOOGLE_HOME_PORT = 8009
 MP3_ROUTE = "/mp3"
 
+DEVICE_IPS = {
+    "Jacob": "10.0.0.88",
+    "Alicia": "10.0.0.236",
+    "Master Bedroom": "10.0.0.200",
+    "Living Room Speaker": "10.0.0.113",
+    "Kitchen Speaker": "10.0.0.51",
+}
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -57,18 +64,6 @@ def startup_event(app: FastAPI):
     """Discover Chromecast using CastBrowser at startup."""
     global cast, mc, MP3_FOLDER
       
-    try:
-        cast = pychromecast.get_chromecast_from_host((GOOGLE_HOME_IP, GOOGLE_HOME_PORT, None, None, None), tries=3, retry_wait=10)  # blocking=True waits for connection
-        cast.wait()
-        mc = cast.media_controller
-        # Wait a moment for the connection to fully establish
-        time.sleep(2)
-        logger.info(f"Connected to Chromecast at {GOOGLE_HOME_IP} ({cast.cast_info})")
-    except Exception:
-        logger.exception(f"Failed to connect to Chromecast at {GOOGLE_HOME_IP}")
-        cast = None
-        mc = None
-
     # Ensure MP3 folder exists (create if possible)
     if not os.path.isdir(MP3_FOLDER):
         try:
@@ -90,6 +85,7 @@ app = FastAPI(lifespan=lifespan)
 
 class PlayRequest(BaseModel):
     track: str
+    device: str
     
 def get_mp3_file_names():
     try:
@@ -115,6 +111,16 @@ def list_tracks():
         logger.exception("Failed to list tracks in %s: %s", MP3_FOLDER, e)
         raise HTTPException(status_code=500, detail="Failed to list tracks")
 
+@app.get("/listdevices")
+def list_tracks():
+    """List of device available."""
+    try:
+        device_names = list(DEVICE_IPS.keys())
+        return {"devices": device_names}
+    except Exception as e:
+        logger.exception("Failed to list devices: %s", e)
+        raise HTTPException(status_code=500, detail="Failed to list devices")
+    
 @app.post("/play") 
 def play(req: PlayRequest, request: Request):
     """Play an MP3 file by filename (track).
@@ -123,6 +129,23 @@ def play(req: PlayRequest, request: Request):
     and sends the URL to the Chromecast media controller.
     """
     track = req.track
+    device_ip = DEVICE_IPS.get(req.device)
+    if not device_ip:
+        raise HTTPException(status_code=400, detail="Invalid device name")
+    
+    global cast, mc
+    try:
+        cast = pychromecast.get_chromecast_from_host((device_ip, GOOGLE_HOME_PORT, None, None, None), tries=3, retry_wait=10)  # blocking=True waits for connection
+        cast.wait()
+        mc = cast.media_controller
+        # Wait a moment for the connection to fully establish
+        time.sleep(2)
+        logger.info(f"Connected to Chromecast at {device_ip} ({cast.cast_info})")
+    except Exception:
+        logger.exception(f"Failed to connect to Chromecast at {device_ip}")
+        cast = None
+        mc = None
+    
     safe_filename = os.path.basename(track)
     safe_filename_with_ext = safe_filename + ".mp3"
     if not safe_filename:
