@@ -133,6 +133,7 @@ def play(req: PlayRequest, request: Request):
     if not device_ip:
         raise HTTPException(status_code=400, detail="Invalid device name")
     
+    logger.info(f"Play request received for track: {track} on device: {req.device} ({device_ip})")
     global cast, mc
     try:
         cast = pychromecast.get_chromecast_from_host((device_ip, GOOGLE_HOME_PORT, None, None, None), tries=3, retry_wait=10)  # blocking=True waits for connection

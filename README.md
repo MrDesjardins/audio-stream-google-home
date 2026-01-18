@@ -68,12 +68,12 @@ sudo journalctl -u audio-book -n 100 -f
 ```sh
 curl -X POST http://10.0.0.181:8801/play \
      -H "Content-Type: application/json" \
-     -d '{"track": "x.mp3"}'
+     -d '{"track": "x.mp3", "device": "Jacob"}'
 
 
 curl -X POST http://localhost:8801/play \
 -H "Content-Type: application/json" \
--d '{"track": "x"}'
+-d '{"track": "x", "device": "Jacob"}'
 ```
 
 # Debug
