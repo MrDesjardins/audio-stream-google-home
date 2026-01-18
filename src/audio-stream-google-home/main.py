@@ -139,9 +139,10 @@ def play(req: PlayRequest, request: Request):
         cast = pychromecast.get_chromecast_from_host((device_ip, GOOGLE_HOME_PORT, None, None, None), tries=3, retry_wait=10)  # blocking=True waits for connection
         cast.wait()
         mc = cast.media_controller
-        # Wait a moment for the connection to fully establish
-        time.sleep(2)
         logger.info(f"Connected to Chromecast at {device_ip} ({cast.cast_info})")
+        # Wait for media controller to be ready
+        mc.block_until_active(timeout=10)
+        logger.info(f"Media controller ready for {device_ip}")
     except Exception:
         logger.exception(f"Failed to connect to Chromecast at {device_ip}")
         cast = None
