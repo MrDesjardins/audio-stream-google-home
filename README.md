@@ -2,6 +2,13 @@
 
 Stream MP3 to a specific Google Home Device using Python
 
+# Architecture Diagram
+
+The architecture contains several parts like the ESP-32, the TFT and some components. The backend server is also a critical parts and it is what this repository is all about.
+
+![](AudioBookArchitecture.png)
+
+
 # Environment
 
 ```sh
@@ -68,7 +75,7 @@ sudo journalctl -u audio-book -n 100 -f
 ```sh
 curl -X POST http://10.0.0.181:8801/play \
      -H "Content-Type: application/json" \
-     -d '{"track": "x.mp3", "device": "Jacob"}'
+     -d '{"track": "Adventure_05_Tom_Sawyer", "device": "Jacob"}'
 
 
 curl -X POST http://localhost:8801/play \
