@@ -1,0 +1,629 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Audio Stream Telemetry Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: #0f172a;
+            color: #e2e8f0;
+            padding: 20px;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        header {
+            margin-bottom: 30px;
+            border-bottom: 2px solid #334155;
+            padding-bottom: 20px;
+        }
+
+        h1 {
+            font-size: 2rem;
+            color: #f1f5f9;
+            margin-bottom: 10px;
+        }
+
+        .header-info {
+            display: flex;
+            gap: 20px;
+            flex-wrap: wrap;
+            align-items: center;
+            color: #94a3b8;
+            font-size: 0.9rem;
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 0.85rem;
+            font-weight: 500;
+        }
+
+        .status-healthy {
+            background: #10b981;
+            color: white;
+        }
+
+        .status-unhealthy {
+            background: #ef4444;
+            color: white;
+        }
+
+        .controls {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 30px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        .control-group {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        label {
+            font-size: 0.9rem;
+            color: #cbd5e1;
+        }
+
+        select, button {
+            padding: 8px 16px;
+            border-radius: 6px;
+            border: 1px solid #475569;
+            background: #1e293b;
+            color: #e2e8f0;
+            font-size: 0.9rem;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        select:hover, button:hover {
+            border-color: #64748b;
+            background: #334155;
+        }
+
+        button:active {
+            transform: scale(0.98);
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .stat-card {
+            background: #1e293b;
+            padding: 20px;
+            border-radius: 8px;
+            border: 1px solid #334155;
+        }
+
+        .stat-label {
+            font-size: 0.85rem;
+            color: #94a3b8;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .stat-value {
+            font-size: 2rem;
+            font-weight: 700;
+            color: #f1f5f9;
+            margin-top: 5px;
+        }
+
+        .charts-grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 30px;
+            margin-bottom: 30px;
+        }
+
+        .chart-container {
+            background: #1e293b;
+            padding: 25px;
+            border-radius: 8px;
+            border: 1px solid #334155;
+        }
+
+        .chart-title {
+            font-size: 1.2rem;
+            font-weight: 600;
+            margin-bottom: 20px;
+            color: #f1f5f9;
+        }
+
+        .chart-wrapper {
+            position: relative;
+            height: 350px;
+        }
+
+        .table-container {
+            background: #1e293b;
+            padding: 25px;
+            border-radius: 8px;
+            border: 1px solid #334155;
+            overflow-x: auto;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        th {
+            text-align: left;
+            padding: 12px;
+            background: #0f172a;
+            color: #cbd5e1;
+            font-weight: 600;
+            font-size: 0.9rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        td {
+            padding: 12px;
+            border-top: 1px solid #334155;
+            color: #e2e8f0;
+        }
+
+        tr:hover {
+            background: #0f172a;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #94a3b8;
+        }
+
+        .error {
+            background: #7f1d1d;
+            border: 1px solid #991b1b;
+            color: #fecaca;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+
+        @media (max-width: 768px) {
+            h1 {
+                font-size: 1.5rem;
+            }
+
+            .chart-wrapper {
+                height: 250px;
+            }
+
+            .stats-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Audio Stream Telemetry Dashboard</h1>
+            <div class="header-info">
+                <span id="status-indicator"></span>
+                <span id="total-events">Loading...</span>
+                <span id="last-refresh">Last refresh: Never</span>
+            </div>
+        </header>
+
+        <div class="controls">
+            <div class="control-group">
+                <label for="period-select">Time Period:</label>
+                <select id="period-select">
+                    <option value="7">Last 7 days</option>
+                    <option value="30" selected>Last 30 days</option>
+                    <option value="90">Last 90 days</option>
+                </select>
+            </div>
+            <div class="control-group">
+                <button id="refresh-btn">Refresh Data</button>
+                <button id="auto-refresh-btn">Auto-refresh: OFF</button>
+            </div>
+        </div>
+
+        <div id="error-container"></div>
+
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-label">Total Plays</div>
+                <div class="stat-value" id="stat-total-plays">-</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Unique Tracks</div>
+                <div class="stat-value" id="stat-unique-tracks">-</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Most Popular</div>
+                <div class="stat-value" id="stat-most-popular" style="font-size: 1.2rem;">-</div>
+            </div>
+        </div>
+
+        <div class="charts-grid">
+            <div class="chart-container">
+                <h2 class="chart-title">Daily Playback Activity</h2>
+                <div class="chart-wrapper">
+                    <canvas id="daily-chart"></canvas>
+                </div>
+            </div>
+
+            <div class="chart-container">
+                <h2 class="chart-title">Weekly Playback Activity</h2>
+                <div class="chart-wrapper">
+                    <canvas id="weekly-chart"></canvas>
+                </div>
+            </div>
+
+            <div class="chart-container">
+                <h2 class="chart-title">Monthly Playback Activity</h2>
+                <div class="chart-wrapper">
+                    <canvas id="monthly-chart"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <div class="table-container">
+            <h2 class="chart-title">Top Tracks</h2>
+            <table id="top-tracks-table">
+                <thead>
+                    <tr>
+                        <th>Rank</th>
+                        <th>Track Name</th>
+                        <th>Play Count</th>
+                        <th>Last Played</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td colspan="4" class="loading">Loading...</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        // Configuration
+        const API_BASE = '/telemetry';
+        let autoRefreshInterval = null;
+        let charts = {
+            daily: null,
+            weekly: null,
+            monthly: null
+        };
+
+        // Color palette for tracks
+        const COLORS = [
+            '#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6',
+            '#ec4899', '#14b8a6', '#f97316', '#06b6d4', '#84cc16'
+        ];
+
+        // Initialize dashboard
+        async function init() {
+            setupEventListeners();
+            await loadData();
+        }
+
+        // Setup event listeners
+        function setupEventListeners() {
+            document.getElementById('refresh-btn').addEventListener('click', loadData);
+            document.getElementById('period-select').addEventListener('change', loadData);
+            document.getElementById('auto-refresh-btn').addEventListener('click', toggleAutoRefresh);
+        }
+
+        // Toggle auto-refresh
+        function toggleAutoRefresh() {
+            const btn = document.getElementById('auto-refresh-btn');
+            if (autoRefreshInterval) {
+                clearInterval(autoRefreshInterval);
+                autoRefreshInterval = null;
+                btn.textContent = 'Auto-refresh: OFF';
+            } else {
+                autoRefreshInterval = setInterval(loadData, 30000); // Refresh every 30 seconds
+                btn.textContent = 'Auto-refresh: ON';
+            }
+        }
+
+        // Load all data
+        async function loadData() {
+            try {
+                showError(null);
+                await Promise.all([
+                    loadHealthStatus(),
+                    loadTopTracks(),
+                    loadDailyStats(),
+                    loadWeeklyStats(),
+                    loadMonthlyStats()
+                ]);
+                updateLastRefresh();
+            } catch (error) {
+                showError(`Failed to load data: ${error.message}`);
+            }
+        }
+
+        // Show/hide error message
+        function showError(message) {
+            const container = document.getElementById('error-container');
+            if (message) {
+                container.innerHTML = `<div class="error">${message}</div>`;
+            } else {
+                container.innerHTML = '';
+            }
+        }
+
+        // Update last refresh timestamp
+        function updateLastRefresh() {
+            const now = new Date().toLocaleString();
+            document.getElementById('last-refresh').textContent = `Last refresh: ${now}`;
+        }
+
+        // Load health status
+        async function loadHealthStatus() {
+            const response = await fetch(`${API_BASE}/health`);
+            const data = await response.json();
+
+            const statusIndicator = document.getElementById('status-indicator');
+            const statusClass = data.database_connected ? 'status-healthy' : 'status-unhealthy';
+            statusIndicator.innerHTML = `<span class="status-badge ${statusClass}">${data.status.toUpperCase()}</span>`;
+
+            document.getElementById('total-events').textContent = `Total Events: ${data.total_events.toLocaleString()}`;
+        }
+
+        // Load top tracks
+        async function loadTopTracks() {
+            const period = parseInt(document.getElementById('period-select').value);
+            const response = await fetch(`${API_BASE}/stats/top-tracks?limit=10&days=${period}`);
+            const tracks = await response.json();
+
+            // Update stats
+            const totalPlays = tracks.reduce((sum, t) => sum + t.play_count, 0);
+            document.getElementById('stat-total-plays').textContent = totalPlays.toLocaleString();
+            document.getElementById('stat-unique-tracks').textContent = tracks.length;
+            document.getElementById('stat-most-popular').textContent = tracks[0]?.track_name || '-';
+
+            // Update table
+            const tbody = document.getElementById('top-tracks-table').querySelector('tbody');
+            if (tracks.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="4" class="loading">No data available</td></tr>';
+            } else {
+                tbody.innerHTML = tracks.map((track, index) => `
+                    <tr>
+                        <td>${index + 1}</td>
+                        <td>${track.track_name}</td>
+                        <td>${track.play_count}</td>
+                        <td>${new Date(track.last_played).toLocaleString()}</td>
+                    </tr>
+                `).join('');
+            }
+        }
+
+        // Load daily stats
+        async function loadDailyStats() {
+            const period = parseInt(document.getElementById('period-select').value);
+            const response = await fetch(`${API_BASE}/stats/daily?limit=${period}`);
+            const stats = await response.json();
+
+            // Group by track and prepare data
+            const trackData = {};
+            const dates = new Set();
+
+            stats.forEach(stat => {
+                dates.add(stat.date);
+                if (!trackData[stat.track_name]) {
+                    trackData[stat.track_name] = {};
+                }
+                trackData[stat.track_name][stat.date] = stat.play_count;
+            });
+
+            const sortedDates = Array.from(dates).sort();
+            const topTracks = Object.keys(trackData)
+                .map(track => ({
+                    track,
+                    total: Object.values(trackData[track]).reduce((a, b) => a + b, 0)
+                }))
+                .sort((a, b) => b.total - a.total)
+                .slice(0, 10)
+                .map(t => t.track);
+
+            const datasets = topTracks.map((track, index) => ({
+                label: track,
+                data: sortedDates.map(date => trackData[track][date] || 0),
+                borderColor: COLORS[index % COLORS.length],
+                backgroundColor: COLORS[index % COLORS.length] + '20',
+                tension: 0.3,
+                fill: false
+            }));
+
+            updateChart('daily', sortedDates, datasets, 'Daily Plays');
+        }
+
+        // Load weekly stats
+        async function loadWeeklyStats() {
+            const response = await fetch(`${API_BASE}/stats/weekly?limit=12`);
+            const stats = await response.json();
+
+            // Group by track and prepare data
+            const trackData = {};
+            const weeks = new Set();
+
+            stats.forEach(stat => {
+                const weekLabel = `${stat.year}-W${String(stat.week).padStart(2, '0')}`;
+                weeks.add(weekLabel);
+                if (!trackData[stat.track_name]) {
+                    trackData[stat.track_name] = {};
+                }
+                trackData[stat.track_name][weekLabel] = stat.play_count;
+            });
+
+            const sortedWeeks = Array.from(weeks).sort();
+            const topTracks = Object.keys(trackData)
+                .map(track => ({
+                    track,
+                    total: Object.values(trackData[track]).reduce((a, b) => a + b, 0)
+                }))
+                .sort((a, b) => b.total - a.total)
+                .slice(0, 10)
+                .map(t => t.track);
+
+            const datasets = topTracks.map((track, index) => ({
+                label: track,
+                data: sortedWeeks.map(week => trackData[track][week] || 0),
+                borderColor: COLORS[index % COLORS.length],
+                backgroundColor: COLORS[index % COLORS.length] + '20',
+                tension: 0.3,
+                fill: false
+            }));
+
+            updateChart('weekly', sortedWeeks, datasets, 'Weekly Plays');
+        }
+
+        // Load monthly stats
+        async function loadMonthlyStats() {
+            const response = await fetch(`${API_BASE}/stats/monthly?limit=12`);
+            const stats = await response.json();
+
+            // Group by track and prepare data
+            const trackData = {};
+            const months = new Set();
+
+            stats.forEach(stat => {
+                const monthLabel = `${stat.year}-${String(stat.month).padStart(2, '0')}`;
+                months.add(monthLabel);
+                if (!trackData[stat.track_name]) {
+                    trackData[stat.track_name] = {};
+                }
+                trackData[stat.track_name][monthLabel] = stat.play_count;
+            });
+
+            const sortedMonths = Array.from(months).sort();
+            const topTracks = Object.keys(trackData)
+                .map(track => ({
+                    track,
+                    total: Object.values(trackData[track]).reduce((a, b) => a + b, 0)
+                }))
+                .sort((a, b) => b.total - a.total)
+                .slice(0, 10)
+                .map(t => t.track);
+
+            const datasets = topTracks.map((track, index) => ({
+                label: track,
+                data: sortedMonths.map(month => trackData[track][month] || 0),
+                borderColor: COLORS[index % COLORS.length],
+                backgroundColor: COLORS[index % COLORS.length] + '20',
+                tension: 0.3,
+                fill: false
+            }));
+
+            updateChart('monthly', sortedMonths, datasets, 'Monthly Plays');
+        }
+
+        // Update or create chart
+        function updateChart(chartId, labels, datasets, yAxisLabel) {
+            const canvas = document.getElementById(`${chartId}-chart`);
+            const ctx = canvas.getContext('2d');
+
+            if (charts[chartId]) {
+                charts[chartId].data.labels = labels;
+                charts[chartId].data.datasets = datasets;
+                charts[chartId].update();
+            } else {
+                charts[chartId] = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: labels,
+                        datasets: datasets
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: {
+                                position: 'top',
+                                labels: {
+                                    color: '#cbd5e1',
+                                    padding: 15,
+                                    font: {
+                                        size: 11
+                                    }
+                                }
+                            },
+                            tooltip: {
+                                mode: 'index',
+                                intersect: false,
+                                backgroundColor: '#1e293b',
+                                borderColor: '#475569',
+                                borderWidth: 1,
+                                titleColor: '#f1f5f9',
+                                bodyColor: '#cbd5e1',
+                                padding: 12
+                            }
+                        },
+                        scales: {
+                            x: {
+                                grid: {
+                                    color: '#334155',
+                                    drawBorder: false
+                                },
+                                ticks: {
+                                    color: '#94a3b8',
+                                    maxRotation: 45,
+                                    minRotation: 45
+                                }
+                            },
+                            y: {
+                                beginAtZero: true,
+                                grid: {
+                                    color: '#334155',
+                                    drawBorder: false
+                                },
+                                ticks: {
+                                    color: '#94a3b8',
+                                    precision: 0
+                                },
+                                title: {
+                                    display: true,
+                                    text: yAxisLabel,
+                                    color: '#cbd5e1'
+                                }
+                            }
+                        },
+                        interaction: {
+                            mode: 'nearest',
+                            axis: 'x',
+                            intersect: false
+                        }
+                    }
+                });
+            }
+        }
+
+        // Initialize on page load
+        init();
+    </script>
+</body>
+</html>

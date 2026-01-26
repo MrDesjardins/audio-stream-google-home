@@ -10,6 +10,10 @@ from urllib.parse import quote
 import uvicorn
 from dotenv import load_dotenv
 from pathlib import Path
+try:
+    from .telemetry import TelemetryService, get_telemetry_router
+except ImportError:
+    from telemetry import TelemetryService, get_telemetry_router
 
 # Load the .env file explicitly from the repository root (works regardless of CWD).
 # File location: src/audio-stream-google-home/main.py -> parents[2] is the repo root.
@@ -55,12 +59,12 @@ mc = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Init
-    startup_event(app)
+    await startup_event(app)
     yield
     # Clean up
     # Nothing for now
 
-def startup_event(app: FastAPI):
+async def startup_event(app: FastAPI):
     """Discover Chromecast using CastBrowser at startup."""
     global cast, mc, MP3_FOLDER
       
@@ -80,6 +84,12 @@ def startup_event(app: FastAPI):
         except Exception as e:
             logger.exception("MP3 folder %s missing and could not be created: %s", MP3_FOLDER, e)
     app.mount(MP3_ROUTE, StaticFiles(directory=MP3_FOLDER), name="mp3")
+
+    # Initialize telemetry
+    telemetry = TelemetryService()
+    await telemetry.initialize()
+    app.telemetry = telemetry
+    app.include_router(get_telemetry_router(telemetry), prefix="/telemetry", tags=["telemetry"])
 
 app = FastAPI(lifespan=lifespan)
 
@@ -121,8 +131,8 @@ def list_tracks():
         logger.exception("Failed to list devices: %s", e)
         raise HTTPException(status_code=500, detail="Failed to list devices")
     
-@app.post("/play") 
-def play(req: PlayRequest, request: Request):
+@app.post("/play")
+async def play(req: PlayRequest, request: Request):
     """Play an MP3 file by filename (track).
 
     Validates the requested filename, checks it exists in `MP3_FOLDER`,
@@ -143,10 +153,21 @@ def play(req: PlayRequest, request: Request):
         # Wait for media controller to be ready
         mc.block_until_active(timeout=10)
         logger.info(f"Media controller ready for {device_ip}")
-    except Exception:
+    except Exception as e:
         logger.exception(f"Failed to connect to Chromecast at {device_ip}")
         cast = None
         mc = None
+        # Record telemetry for connection failure
+        try:
+            await app.telemetry.record_playback(
+                track_name=track,
+                device_name=req.device,
+                device_ip=device_ip,
+                status="failed",
+                error_message=f"Connection failed: {str(e)}"
+            )
+        except Exception:
+            logger.exception("Failed to record telemetry for connection failure")
     
     safe_filename = os.path.basename(track)
     safe_filename_with_ext = safe_filename + ".mp3"
@@ -181,6 +202,16 @@ def play(req: PlayRequest, request: Request):
             logger.info(f"Attempting to play media {track_url} (attempt {attempt + 1}/{MAX_RETRIES})")
             mc.play_media(track_url, "audio/mp3", title=f"Playing {safe_filename}", subtitles=f"From audio Stream Server")
             logger.info(f"Successfully sent play command for {safe_filename}")
+            # Record successful playback
+            try:
+                await app.telemetry.record_playback(
+                    track_name=safe_filename,
+                    device_name=req.device,
+                    device_ip=device_ip,
+                    status="success"
+                )
+            except Exception:
+                logger.exception("Failed to record telemetry for successful playback")
             break
         except pychromecast.error.NotConnected as e:
             logger.error("Cast not ready, retrying...")
@@ -188,6 +219,17 @@ def play(req: PlayRequest, request: Request):
                 time.sleep(3)
             else:
                 logger.exception("Failed to play media %s after retries", track_url)
+                # Record telemetry for playback failure
+                try:
+                    await app.telemetry.record_playback(
+                        track_name=safe_filename,
+                        device_name=req.device,
+                        device_ip=device_ip,
+                        status="failed",
+                        error_message=f"Cast not ready after {MAX_RETRIES} retries"
+                    )
+                except Exception:
+                    logger.exception("Failed to record telemetry for playback failure")
                 raise HTTPException(status_code=503, detail="Cast device not ready")
 
     return {"status": "ok", "track_url": track_url}
