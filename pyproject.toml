@@ -10,4 +10,5 @@ dependencies = [
     "pychromecast>=14.0.9",
     "python-dotenv>=1.2.1",
     "uvicorn[standard]>=0.20.0",
+    "yt-dlp>=2025.12.8",
 ]
