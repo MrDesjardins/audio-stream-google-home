@@ -55,6 +55,20 @@ class TopTrack(BaseModel):
     last_played: str
 
 
+class HeatmapStat(BaseModel):
+    """Model for day-of-week × 15-minute heatmap cell."""
+    day_of_week: int   # 0=Sunday … 6=Saturday
+    time_slot: int     # 0=00:00, 1=00:15, …, 95=23:45
+    play_count: int
+
+
+class EveningHeatmapStat(BaseModel):
+    """Model for date × evening 15-minute slot heatmap cell (PST, 18:00-23:45)."""
+    play_date: str   # ISO date in PST (e.g. 2026-03-01)
+    time_slot: int   # 0=18:00, 1=18:15, …, 23=23:45
+    play_count: int
+
+
 class HealthStatus(BaseModel):
     """Model for health status."""
     status: str
@@ -210,6 +224,7 @@ class TelemetryService:
             List of weekly statistics
         """
         try:
+            days = limit * 7
             async with aiosqlite.connect(self.db_path) as db:
                 db.row_factory = aiosqlite.Row
                 async with db.execute("""
@@ -220,10 +235,10 @@ class TelemetryService:
                         COUNT(*) as play_count
                     FROM playback_events
                     WHERE status = 'success'
-                    AND DATE(timestamp_utc) >= DATE('now', '-' || ? * 7 || ' days')
+                    AND DATE(timestamp_utc) >= DATE('now', '-' || ? || ' days')
                     GROUP BY year, week, track_name
                     ORDER BY year DESC, week DESC, play_count DESC
-                """, (limit,)) as cursor:
+                """, (days,)) as cursor:
                     rows = await cursor.fetchall()
                     return [WeeklyStats(**dict(row)) for row in rows]
         except Exception as e:
@@ -307,6 +322,72 @@ class TelemetryService:
                     return [TopTrack(**dict(row)) for row in rows]
         except Exception as e:
             logger.error(f"Failed to get top tracks: {e}")
+            return []
+
+    async def get_heatmap_stats(self, days: int = 90) -> List[HeatmapStat]:
+        """Get playback counts grouped by day-of-week and 15-minute time slot.
+
+        Args:
+            days: Number of past days to include
+
+        Returns:
+            List of heatmap cells (only non-zero cells are returned)
+        """
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                db.row_factory = aiosqlite.Row
+                async with db.execute("""
+                    SELECT
+                        CAST(STRFTIME('%w', datetime(timestamp_utc, '-8 hours')) AS INTEGER) as day_of_week,
+                        CAST(STRFTIME('%H', datetime(timestamp_utc, '-8 hours')) AS INTEGER) * 4
+                            + CAST(STRFTIME('%M', datetime(timestamp_utc, '-8 hours')) AS INTEGER) / 15 as time_slot,
+                        COUNT(*) as play_count
+                    FROM playback_events
+                    WHERE status = 'success'
+                    AND DATE(timestamp_utc) >= DATE('now', '-' || ? || ' days')
+                    GROUP BY day_of_week, time_slot
+                    ORDER BY day_of_week, time_slot
+                """, (days,)) as cursor:
+                    rows = await cursor.fetchall()
+                    return [HeatmapStat(**dict(row)) for row in rows]
+        except Exception as e:
+            logger.error(f"Failed to get heatmap stats: {e}")
+            return []
+
+    async def get_evening_heatmap_stats(self, days: int = 30) -> List[EveningHeatmapStat]:
+        """Get 6pm-11pm PST playback counts by date and 15-minute slot.
+
+        Timestamps are stored as UTC and shifted by -8 hours for PST.
+        Slots 0-14 map to 18:30-22:00 PST (absolute slot offset 74).
+
+        Args:
+            days: Number of past days to include
+
+        Returns:
+            List of non-zero evening heatmap cells
+        """
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                db.row_factory = aiosqlite.Row
+                async with db.execute("""
+                    SELECT
+                        DATE(datetime(timestamp_utc, '-8 hours')) as play_date,
+                        CAST(STRFTIME('%H', datetime(timestamp_utc, '-8 hours')) AS INTEGER) * 4
+                            + CAST(STRFTIME('%M', datetime(timestamp_utc, '-8 hours')) AS INTEGER) / 15 - 74 as time_slot,
+                        COUNT(*) as play_count
+                    FROM playback_events
+                    WHERE status = 'success'
+                    AND DATE(timestamp_utc) >= DATE('now', '-' || ? || ' days')
+                    AND CAST(STRFTIME('%H', datetime(timestamp_utc, '-8 hours')) AS INTEGER) * 4
+                        + CAST(STRFTIME('%M', datetime(timestamp_utc, '-8 hours')) AS INTEGER) / 15
+                        BETWEEN 74 AND 88
+                    GROUP BY play_date, time_slot
+                    ORDER BY play_date, time_slot
+                """, (days,)) as cursor:
+                    rows = await cursor.fetchall()
+                    return [EveningHeatmapStat(**dict(row)) for row in rows]
+        except Exception as e:
+            logger.error(f"Failed to get evening heatmap stats: {e}")
             return []
 
     async def get_health_status(self) -> HealthStatus:
@@ -401,6 +482,24 @@ def get_telemetry_router(telemetry: TelemetryService) -> APIRouter:
             days: Optional number of days to look back (None = all time)
         """
         return await telemetry.get_top_tracks(limit, days)
+
+    @router.get("/stats/heatmap", response_model=List[HeatmapStat])
+    async def heatmap_stats(days: int = Query(default=90, ge=1, le=365)):
+        """Get play counts by day-of-week and 15-minute time slot.
+
+        Args:
+            days: Number of past days to include (1-365)
+        """
+        return await telemetry.get_heatmap_stats(days)
+
+    @router.get("/stats/evening-heatmap", response_model=List[EveningHeatmapStat])
+    async def evening_heatmap_stats(days: int = Query(default=30, ge=1, le=365)):
+        """Get 6pm-11pm PST play counts by date and 15-minute slot.
+
+        Args:
+            days: Number of past days to include (1-365)
+        """
+        return await telemetry.get_evening_heatmap_stats(days)
 
     @router.get("/dashboard", response_class=HTMLResponse)
     async def dashboard():

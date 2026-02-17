@@ -206,6 +206,51 @@
             margin-bottom: 20px;
         }
 
+        .heatmap-container {
+            background: #1e293b;
+            padding: 25px;
+            border-radius: 8px;
+            border: 1px solid #334155;
+            margin-bottom: 30px;
+        }
+
+        .heatmap-scroll {
+            overflow-x: auto;
+        }
+
+        #heatmap-canvas {
+            display: block;
+            cursor: crosshair;
+        }
+
+        .heatmap-legend {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.85rem;
+            color: #94a3b8;
+            margin-top: 12px;
+        }
+
+        .heatmap-legend-bar {
+            width: 160px;
+            height: 12px;
+            border-radius: 3px;
+        }
+
+        .heatmap-tooltip {
+            position: fixed;
+            background: #0f172a;
+            border: 1px solid #475569;
+            color: #e2e8f0;
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 0.85rem;
+            pointer-events: none;
+            display: none;
+            z-index: 100;
+        }
+
         @media (max-width: 768px) {
             h1 {
                 font-size: 1.5rem;
@@ -287,6 +332,34 @@
             </div>
         </div>
 
+        <div class="heatmap-container">
+            <h2 class="chart-title">Playback Heatmap — Day of Week × Time of Day (PST)</h2>
+            <div class="heatmap-scroll">
+                <canvas id="heatmap-canvas"></canvas>
+            </div>
+            <div class="heatmap-legend">
+                <span>0</span>
+                <canvas class="heatmap-legend-bar" id="heatmap-legend-bar" height="12"></canvas>
+                <span id="heatmap-legend-max">max</span>
+            </div>
+        </div>
+
+        <div id="heatmap-tooltip" class="heatmap-tooltip"></div>
+
+        <div class="heatmap-container">
+            <h2 class="chart-title">Evening Playback Heatmap — 18:30–22:00 PST (by Date)</h2>
+            <div class="heatmap-scroll">
+                <canvas id="evening-heatmap-canvas"></canvas>
+            </div>
+            <div class="heatmap-legend">
+                <span>0</span>
+                <canvas class="heatmap-legend-bar" id="evening-heatmap-legend-bar" height="12"></canvas>
+                <span id="evening-heatmap-legend-max">max</span>
+            </div>
+        </div>
+
+        <div id="evening-heatmap-tooltip" class="heatmap-tooltip"></div>
+
         <div class="table-container">
             <h2 class="chart-title">Top Tracks</h2>
             <table id="top-tracks-table">
@@ -358,7 +431,9 @@
                     loadTopTracks(),
                     loadDailyStats(),
                     loadWeeklyStats(),
-                    loadMonthlyStats()
+                    loadMonthlyStats(),
+                    loadHeatmap(),
+                    loadEveningHeatmap()
                 ]);
                 updateLastRefresh();
             } catch (error) {
@@ -621,6 +696,312 @@
                 });
             }
         }
+
+        // ── Heatmap ──────────────────────────────────────────────────────────
+
+        const HEATMAP_DAYS   = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+        const HEATMAP_SLOTS  = 96;   // 15-min blocks per day
+        const CELL_W         = 58;
+        const CELL_H         = 9;
+        const LABEL_W        = 44;   // width reserved for time labels on left
+        const LABEL_H        = 28;   // height reserved for day labels on top
+
+        // Map a normalised value 0-1 to a canvas colour string.
+        // 0        → card background (#1e293b)
+        // 0 < v ≤ 1 → dark-teal … bright-cyan  (#0f4c5c → #38bdf8)
+        function heatColor(norm) {
+            if (norm === 0) return '#1e293b';
+            // Clamp to [0.05, 1] so even a single play shows a tint
+            const t = 0.05 + norm * 0.95;
+            const r = Math.round(15  + t * (56  - 15));
+            const g = Math.round(76  + t * (189 - 76));
+            const b = Math.round(92  + t * (248 - 92));
+            return `rgb(${r},${g},${b})`;
+        }
+
+        function drawLegend(maxCount) {
+            const bar = document.getElementById('heatmap-legend-bar');
+            bar.width = 160;
+            const ctx = bar.getContext('2d');
+            for (let x = 0; x < 160; x++) {
+                ctx.fillStyle = heatColor(x / 159);
+                ctx.fillRect(x, 0, 1, 12);
+            }
+            document.getElementById('heatmap-legend-max').textContent = maxCount;
+        }
+
+        function renderHeatmap(data) {
+            const canvas = document.getElementById('heatmap-canvas');
+            const ctx    = canvas.getContext('2d');
+
+            // Build matrix [day][slot]
+            const matrix = Array.from({ length: 7 }, () => new Array(HEATMAP_SLOTS).fill(0));
+            let maxCount = 0;
+            data.forEach(d => {
+                matrix[d.day_of_week][d.time_slot] = d.play_count;
+                if (d.play_count > maxCount) maxCount = d.play_count;
+            });
+
+            const W = LABEL_W + 7 * CELL_W;
+            const H = LABEL_H + HEATMAP_SLOTS * CELL_H;
+            canvas.width  = W;
+            canvas.height = H;
+
+            // Background
+            ctx.fillStyle = '#1e293b';
+            ctx.fillRect(0, 0, W, H);
+
+            // Day labels
+            ctx.fillStyle  = '#cbd5e1';
+            ctx.font       = 'bold 12px sans-serif';
+            ctx.textAlign  = 'center';
+            ctx.textBaseline = 'middle';
+            HEATMAP_DAYS.forEach((day, i) => {
+                ctx.fillText(day, LABEL_W + i * CELL_W + CELL_W / 2, LABEL_H / 2);
+            });
+
+            // Time labels (every hour = every 4 slots)
+            ctx.font      = '10px monospace';
+            ctx.textAlign = 'right';
+            ctx.fillStyle = '#64748b';
+            for (let slot = 0; slot < HEATMAP_SLOTS; slot += 4) {
+                const hour  = slot / 4;
+                const label = `${String(hour).padStart(2, '0')}:00`;
+                const y     = LABEL_H + slot * CELL_H + CELL_H / 2;
+                ctx.fillText(label, LABEL_W - 4, y);
+            }
+
+            // Cells
+            for (let day = 0; day < 7; day++) {
+                for (let slot = 0; slot < HEATMAP_SLOTS; slot++) {
+                    const count = matrix[day][slot];
+                    const norm  = maxCount > 0 ? count / maxCount : 0;
+                    ctx.fillStyle = heatColor(norm);
+                    ctx.fillRect(
+                        LABEL_W + day * CELL_W,
+                        LABEL_H + slot * CELL_H,
+                        CELL_W - 1,
+                        CELL_H - 1
+                    );
+                }
+            }
+
+            // Store matrix + maxCount on the canvas element for tooltip use
+            canvas._matrix   = matrix;
+            canvas._maxCount = maxCount;
+
+            drawLegend(maxCount);
+        }
+
+        // Tooltip on mouse move
+        (function setupHeatmapTooltip() {
+            const canvas  = document.getElementById('heatmap-canvas');
+            const tooltip = document.getElementById('heatmap-tooltip');
+
+            canvas.addEventListener('mousemove', e => {
+                if (!canvas._matrix) return;
+                const rect = canvas.getBoundingClientRect();
+                const mx   = e.clientX - rect.left;
+                const my   = e.clientY - rect.top;
+
+                const day  = Math.floor((mx - LABEL_W) / CELL_W);
+                const slot = Math.floor((my - LABEL_H) / CELL_H);
+
+                if (day < 0 || day > 6 || slot < 0 || slot >= HEATMAP_SLOTS) {
+                    tooltip.style.display = 'none';
+                    return;
+                }
+
+                const count  = canvas._matrix[day][slot];
+                const hour   = Math.floor(slot / 4);
+                const minute = (slot % 4) * 15;
+                const time   = `${String(hour).padStart(2,'0')}:${String(minute).padStart(2,'0')}`;
+                const dayName = HEATMAP_DAYS[day];
+
+                tooltip.style.display = 'block';
+                tooltip.style.left    = `${e.clientX + 14}px`;
+                tooltip.style.top     = `${e.clientY - 10}px`;
+                tooltip.textContent   = `${dayName} ${time}–${String(hour + (minute === 45 ? 1 : 0)).padStart(2,'0')}:${String((minute + 15) % 60).padStart(2,'0')}  ·  ${count} play${count !== 1 ? 's' : ''}`;
+            });
+
+            canvas.addEventListener('mouseleave', () => {
+                tooltip.style.display = 'none';
+            });
+        })();
+
+        async function loadHeatmap() {
+            const days = document.getElementById('period-select').value;
+            const response = await fetch(`${API_BASE}/stats/heatmap?days=${days}`);
+            const data = await response.json();
+            renderHeatmap(data);
+        }
+
+        // ── Evening Heatmap (date × 6pm-11pm PST) ────────────────────────────
+
+        const EVENING_SLOTS       = 15;   // 18:30 to 22:00  (15 × 15-min slots)
+        const EVENING_SLOT_OFFSET = 74;   // absolute 15-min index of 18:30 (18×4+2)
+        const E_CELL_W            = 16;
+        const E_CELL_H            = 20;
+        const E_LABEL_W           = 44;   // left: time labels
+        const E_LABEL_H           = 90;   // top:  diagonal date labels
+        const E_PAD_RIGHT         = 70;   // right: room for last diagonal label
+
+        function drawEveningLegend(maxCount) {
+            const bar = document.getElementById('evening-heatmap-legend-bar');
+            bar.width = 160;
+            const ctx = bar.getContext('2d');
+            for (let x = 0; x < 160; x++) {
+                ctx.fillStyle = heatColor(x / 159);
+                ctx.fillRect(x, 0, 1, 12);
+            }
+            document.getElementById('evening-heatmap-legend-max').textContent = maxCount;
+        }
+
+        // Generate all ISO date strings for the last `days` days (browser-local date).
+        function dateRange(days) {
+            const list = [];
+            const today = new Date();
+            for (let i = days - 1; i >= 0; i--) {
+                const d = new Date(today);
+                d.setDate(d.getDate() - i);
+                const y  = d.getFullYear();
+                const m  = String(d.getMonth() + 1).padStart(2, '0');
+                const dd = String(d.getDate()).padStart(2, '0');
+                list.push(`${y}-${m}-${dd}`);
+            }
+            return list;
+        }
+
+        function renderEveningHeatmap(data, days) {
+            const canvas = document.getElementById('evening-heatmap-canvas');
+            const ctx    = canvas.getContext('2d');
+
+            const dates = dateRange(days);
+
+            // Build matrix indexed by date string
+            const matrix = {};
+            let maxCount = 0;
+            data.forEach(d => {
+                if (!matrix[d.play_date]) matrix[d.play_date] = new Array(EVENING_SLOTS).fill(0);
+                if (d.time_slot >= 0 && d.time_slot < EVENING_SLOTS) {
+                    matrix[d.play_date][d.time_slot] = d.play_count;
+                    if (d.play_count > maxCount) maxCount = d.play_count;
+                }
+            });
+
+            const W = E_LABEL_W + dates.length * E_CELL_W + E_PAD_RIGHT;
+            const H = E_LABEL_H + EVENING_SLOTS * E_CELL_H;
+            canvas.width  = W;
+            canvas.height = H;
+
+            // Background
+            ctx.fillStyle = '#1e293b';
+            ctx.fillRect(0, 0, W, H);
+
+            // Date labels — 45° diagonal going upward-right, outside the grid
+            const labelStep = Math.max(1, Math.round(dates.length / 8));
+            ctx.font         = '11px sans-serif';
+            ctx.textAlign    = 'left';
+            ctx.textBaseline = 'bottom';
+            dates.forEach((date, i) => {
+                const isLabelled = (i % labelStep === 0) || (i === dates.length - 1);
+                // Tick line from label area down to grid edge
+                ctx.fillStyle = '#475569';
+                ctx.fillRect(E_LABEL_W + i * E_CELL_W + E_CELL_W / 2 - 0.5, E_LABEL_H - 6, 1, 6);
+                if (!isLabelled) return;
+                ctx.fillStyle = '#e2e8f0';
+                const x = E_LABEL_W + i * E_CELL_W + E_CELL_W / 2;
+                ctx.save();
+                ctx.translate(x, E_LABEL_H - 8);
+                ctx.rotate(-Math.PI / 4);
+                ctx.fillText(date, 0, 0);
+                ctx.restore();
+            });
+
+            // Time labels on the left (every 30 min = every 2 slots)
+            ctx.fillStyle    = '#94a3b8';
+            ctx.font         = '10px monospace';
+            ctx.textAlign    = 'right';
+            ctx.textBaseline = 'middle';
+            for (let slot = 0; slot < EVENING_SLOTS; slot += 2) {
+                const absSlot = slot + EVENING_SLOT_OFFSET;
+                const hour    = Math.floor(absSlot / 4);
+                const min     = (absSlot % 4) * 15;
+                const label   = `${String(hour).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
+                ctx.fillText(label, E_LABEL_W - 4, E_LABEL_H + slot * E_CELL_H + E_CELL_H / 2);
+            }
+
+            // Cells
+            dates.forEach((date, i) => {
+                const row = matrix[date] || [];
+                for (let slot = 0; slot < EVENING_SLOTS; slot++) {
+                    const count = row[slot] || 0;
+                    const norm  = maxCount > 0 ? count / maxCount : 0;
+                    ctx.fillStyle = heatColor(norm);
+                    ctx.fillRect(
+                        E_LABEL_W + i * E_CELL_W,
+                        E_LABEL_H + slot * E_CELL_H,
+                        E_CELL_W - 1,
+                        E_CELL_H - 1
+                    );
+                }
+            });
+
+            canvas._dates    = dates;
+            canvas._matrix   = matrix;
+            canvas._maxCount = maxCount;
+
+            drawEveningLegend(maxCount);
+        }
+
+        // Tooltip for evening heatmap
+        (function setupEveningTooltip() {
+            const canvas  = document.getElementById('evening-heatmap-canvas');
+            const tooltip = document.getElementById('evening-heatmap-tooltip');
+
+            canvas.addEventListener('mousemove', e => {
+                if (!canvas._dates) return;
+                const rect  = canvas.getBoundingClientRect();
+                const mx    = e.clientX - rect.left;
+                const my    = e.clientY - rect.top;
+                const col   = Math.floor((mx - E_LABEL_W) / E_CELL_W);
+                const slot  = Math.floor((my - E_LABEL_H) / E_CELL_H);
+
+                if (col < 0 || col >= canvas._dates.length || slot < 0 || slot >= EVENING_SLOTS) {
+                    tooltip.style.display = 'none';
+                    return;
+                }
+
+                const date     = canvas._dates[col];
+                const absSlot  = slot + EVENING_SLOT_OFFSET;
+                const hour     = Math.floor(absSlot / 4);
+                const min      = (absSlot % 4) * 15;
+                const time     = `${String(hour).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
+                const endAbs   = absSlot + 1;
+                const endH     = Math.floor(endAbs / 4);
+                const endM     = (endAbs % 4) * 15;
+                const endT     = `${String(endH).padStart(2, '0')}:${String(endM).padStart(2, '0')}`;
+                const count = (canvas._matrix[date] || [])[slot] || 0;
+
+                tooltip.style.display = 'block';
+                tooltip.style.left    = `${e.clientX + 14}px`;
+                tooltip.style.top     = `${e.clientY - 10}px`;
+                tooltip.textContent   = `${date}  ${time}–${endT} PST  ·  ${count} play${count !== 1 ? 's' : ''}`;
+            });
+
+            canvas.addEventListener('mouseleave', () => {
+                tooltip.style.display = 'none';
+            });
+        })();
+
+        async function loadEveningHeatmap() {
+            const days = parseInt(document.getElementById('period-select').value);
+            const response = await fetch(`${API_BASE}/stats/evening-heatmap?days=${days}`);
+            const data = await response.json();
+            renderEveningHeatmap(data, days);
+        }
+
+        // ── End Heatmap ───────────────────────────────────────────────────────
 
         // Initialize on page load
         init();
