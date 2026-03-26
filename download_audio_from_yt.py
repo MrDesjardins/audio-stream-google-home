@@ -25,6 +25,9 @@ def download_audio(url):
                 "preferredquality": "192",
             }
         ],
+        # Avoid 403 errors by using browser-like headers
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
     }
 
     try:

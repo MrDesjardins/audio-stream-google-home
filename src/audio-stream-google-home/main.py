@@ -6,6 +6,8 @@ from pydantic import BaseModel
 import os
 import time
 import logging
+import subprocess
+import re
 from urllib.parse import quote
 import uvicorn
 from dotenv import load_dotenv
@@ -40,13 +42,175 @@ else:
 GOOGLE_HOME_PORT = 8009
 MP3_ROUTE = "/mp3"
 
-DEVICE_IPS = {
-    "Jacob": "10.0.0.88",
-    "Alicia": "10.0.0.236",
+DEFAULT_DEVICE_IPS = {
+    "Jacob": "10.0.0.55",
+    "Alicia": "10.0.0.200",
     "Master Bedroom": "10.0.0.200",
-    "Living Room Speaker": "10.0.0.113",
+    "Living Room Speaker": "10.0.0.236",
     "Kitchen Speaker": "10.0.0.51",
 }
+DEVICE_IPS = dict(DEFAULT_DEVICE_IPS)
+
+
+def discover_device_ips_from_avahi():
+    """Discover Google Cast devices from avahi-browse output.
+
+    Uses avahi-browse on _googlecast._tcp and returns a dict
+    of {friendly_device_name: ip_address}.
+    """
+    cmd = ["avahi-browse", "-rt", "_googlecast._tcp"]
+    discovered = {}
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except FileNotFoundError:
+        logger.warning("avahi-browse not found; using fallback static DEVICE_IPS")
+        return {}
+    except subprocess.TimeoutExpired:
+        logger.warning("avahi-browse timed out; using fallback static DEVICE_IPS")
+        return {}
+    except Exception as e:
+        logger.exception("Unexpected error while running avahi-browse: %s", e)
+        return {}
+
+    if result.returncode != 0:
+        logger.warning(
+            "avahi-browse returned non-zero exit code %s; stderr=%s",
+            result.returncode,
+            result.stderr.strip(),
+        )
+        return {}
+
+    def _normalize_name(value):
+        return re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
+
+    def _parse_txt_kv(txt_line):
+        # Example:
+        # txt = ["...","fn=Kitchen speaker","md=Google Home","id=..."]
+        pairs = re.findall(r'"([^"]*)"', txt_line)
+        txt = {}
+        for pair in pairs:
+            if "=" not in pair:
+                continue
+            key, value = pair.split("=", 1)
+            txt[key.strip()] = value.strip()
+        return txt
+
+    # Track best address by friendly name, preferring IPv4 if available.
+    # Value format: {"ip": "...", "is_ipv4": bool}
+    candidates = {}
+    current = None
+
+    for raw_line in result.stdout.splitlines():
+        line = raw_line.rstrip()
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        if stripped.startswith("="):
+            # Example:
+            # = enp1s0 IPv4 Google-Home-... _googlecast._tcp local
+            parts = stripped.split()
+            if len(parts) >= 6:
+                current = {
+                    "proto": parts[2].strip(),
+                    "service_name": parts[3].strip(),
+                    "service_type": parts[4].strip(),
+                    "address": "",
+                    "port": "",
+                    "txt": {},
+                }
+            else:
+                current = None
+            continue
+
+        if not current:
+            continue
+
+        if "address =" in stripped:
+            m = re.search(r"address\s*=\s*\[(.*?)\]", stripped)
+            if m:
+                current["address"] = m.group(1).strip()
+            continue
+
+        if "port =" in stripped:
+            m = re.search(r"port\s*=\s*\[(.*?)\]", stripped)
+            if m:
+                current["port"] = m.group(1).strip()
+            continue
+
+        if stripped.startswith("txt ="):
+            current["txt"] = _parse_txt_kv(stripped)
+
+            if current.get("service_type") != "_googlecast._tcp":
+                current = None
+                continue
+
+            # Ignore groups and non-standard Cast service ports.
+            if current.get("port") != "8009":
+                current = None
+                continue
+
+            address = current.get("address")
+            if not address:
+                current = None
+                continue
+
+            txt = current.get("txt", {})
+            model = txt.get("md", "")
+            if model == "Google Cast Group":
+                current = None
+                continue
+
+            friendly_name = txt.get("fn") or current.get("service_name", "")
+            if not friendly_name:
+                current = None
+                continue
+
+            is_ipv4 = current.get("proto", "").upper() == "IPV4"
+            existing = candidates.get(friendly_name)
+            if (not existing) or (is_ipv4 and not existing["is_ipv4"]):
+                candidates[friendly_name] = {"ip": address, "is_ipv4": is_ipv4}
+
+            current = None
+
+    for name, entry in candidates.items():
+        discovered[name] = entry["ip"]
+
+    # Keep compatibility with existing short aliases in requests.
+    normalized_discovered = {_normalize_name(k): v for k, v in discovered.items()}
+    for alias in DEFAULT_DEVICE_IPS.keys():
+        key = _normalize_name(alias)
+        if key in normalized_discovered:
+            discovered[alias] = normalized_discovered[key]
+            continue
+        alias_tokens = key.split()
+        for d_name, d_ip in discovered.items():
+            d_key = _normalize_name(d_name)
+            if all(token in d_key for token in alias_tokens if token):
+                discovered[alias] = d_ip
+                break
+
+    return discovered
+
+
+def refresh_device_ips():
+    """Refresh DEVICE_IPS from Avahi; keep static fallback when needed."""
+    global DEVICE_IPS
+    discovered = discover_device_ips_from_avahi()
+    if discovered:
+        DEVICE_IPS = discovered
+        logger.info("Discovered %d Google Cast devices via Avahi", len(DEVICE_IPS))
+    else:
+        DEVICE_IPS = dict(DEFAULT_DEVICE_IPS)
+        logger.warning(
+            "No Google Cast devices discovered via Avahi; using fallback static DEVICE_IPS"
+        )
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -84,6 +248,7 @@ async def startup_event(app: FastAPI):
         except Exception as e:
             logger.exception("MP3 folder %s missing and could not be created: %s", MP3_FOLDER, e)
     app.mount(MP3_ROUTE, StaticFiles(directory=MP3_FOLDER), name="mp3")
+    refresh_device_ips()
 
     # Initialize telemetry
     telemetry = TelemetryService()
@@ -125,6 +290,7 @@ def list_tracks():
 def list_tracks():
     """List of device available."""
     try:
+        refresh_device_ips()
         device_names = list(DEVICE_IPS.keys())
         return {"devices": device_names}
     except Exception as e:
@@ -139,6 +305,7 @@ async def play(req: PlayRequest, request: Request):
     and sends the URL to the Chromecast media controller.
     """
     track = req.track
+    refresh_device_ips()
     device_ip = DEVICE_IPS.get(req.device)
     if not device_ip:
         raise HTTPException(status_code=400, detail="Invalid device name")

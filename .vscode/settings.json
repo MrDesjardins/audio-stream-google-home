@@ -19,5 +19,6 @@
     "titleBar.inactiveForeground": "#e7e7e799"
   },
   "peacock.remoteColor": "#0c8e0c",
-  "python-envs.pythonProjects": []
+  "python-envs.pythonProjects": [],
+  "python.languageServer": "None"
 }
