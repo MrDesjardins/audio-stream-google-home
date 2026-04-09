@@ -184,6 +184,10 @@ def discover_device_ips_from_avahi():
 
     # Keep compatibility with existing short aliases in requests.
     normalized_discovered = {_normalize_name(k): v for k, v in discovered.items()}
+    
+    if normalized_discovered:
+        return normalized_discovered
+
     for alias in DEFAULT_DEVICE_IPS.keys():
         key = _normalize_name(alias)
         if key in normalized_discovered:
