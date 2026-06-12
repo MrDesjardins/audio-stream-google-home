@@ -104,6 +104,10 @@ curl http://localhost:8801/telemetry/stats/daily?limit=30
 curl http://localhost:8801/telemetry/stats/weekly?limit=12
 curl http://localhost:8801/telemetry/stats/monthly?limit=12
 
+# Filter stats by device (optional `device` query param)
+curl "http://localhost:8801/telemetry/devices"
+curl "http://localhost:8801/telemetry/stats/daily?limit=30&device=Jacob"
+
 # Most popular tracks
 curl http://localhost:8801/telemetry/stats/top-tracks?limit=10&days=30
 ```

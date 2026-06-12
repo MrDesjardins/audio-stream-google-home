@@ -14,6 +14,13 @@ logger = logging.getLogger(__name__)
 DB_PATH = Path(__file__).resolve().parents[2] / "telemetry.db"
 
 
+def _device_clause(device: Optional[str]) -> tuple[str, list]:
+    """Return SQL fragment and params for optional device filter."""
+    if device:
+        return "AND device_name = ?", [device]
+    return "", []
+
+
 class PlaybackEvent(BaseModel):
     """Model for a playback event."""
     id: int
@@ -162,42 +169,67 @@ class TelemetryService:
             logger.error(f"Failed to record playback event: {e}")
             # Don't raise - telemetry failures shouldn't affect playback
 
-    async def get_recent_events(self, limit: int = 100) -> List[PlaybackEvent]:
+    async def get_known_devices(self) -> List[str]:
+        """Get distinct device names that have playback history."""
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                async with db.execute("""
+                    SELECT DISTINCT device_name
+                    FROM playback_events
+                    WHERE device_name IS NOT NULL
+                    ORDER BY device_name
+                """) as cursor:
+                    rows = await cursor.fetchall()
+                    return [row[0] for row in rows]
+        except Exception as e:
+            logger.error(f"Failed to get known devices: {e}")
+            return []
+
+    async def get_recent_events(
+        self, limit: int = 100, device: Optional[str] = None
+    ) -> List[PlaybackEvent]:
         """Get recent playback events.
 
         Args:
             limit: Maximum number of events to return
+            device: Optional device name filter
 
         Returns:
             List of playback events
         """
         try:
+            device_sql, device_params = _device_clause(device)
             async with aiosqlite.connect(self.db_path) as db:
                 db.row_factory = aiosqlite.Row
-                async with db.execute("""
+                async with db.execute(f"""
                     SELECT * FROM playback_events
+                    WHERE 1=1 {device_sql}
                     ORDER BY timestamp_utc DESC
                     LIMIT ?
-                """, (limit,)) as cursor:
+                """, (*device_params, limit)) as cursor:
                     rows = await cursor.fetchall()
                     return [PlaybackEvent(**dict(row)) for row in rows]
         except Exception as e:
             logger.error(f"Failed to get recent events: {e}")
             return []
 
-    async def get_daily_stats(self, limit: int = 30) -> List[DailyStats]:
+    async def get_daily_stats(
+        self, limit: int = 30, device: Optional[str] = None
+    ) -> List[DailyStats]:
         """Get daily playback statistics.
 
         Args:
             limit: Number of days to include
+            device: Optional device name filter
 
         Returns:
             List of daily statistics
         """
         try:
+            device_sql, device_params = _device_clause(device)
             async with aiosqlite.connect(self.db_path) as db:
                 db.row_factory = aiosqlite.Row
-                async with db.execute("""
+                async with db.execute(f"""
                     SELECT
                         DATE(timestamp_utc) as date,
                         track_name,
@@ -205,29 +237,34 @@ class TelemetryService:
                     FROM playback_events
                     WHERE status = 'success'
                     AND DATE(timestamp_utc) >= DATE('now', '-' || ? || ' days')
+                    {device_sql}
                     GROUP BY DATE(timestamp_utc), track_name
                     ORDER BY date DESC, play_count DESC
-                """, (limit,)) as cursor:
+                """, (limit, *device_params)) as cursor:
                     rows = await cursor.fetchall()
                     return [DailyStats(**dict(row)) for row in rows]
         except Exception as e:
             logger.error(f"Failed to get daily stats: {e}")
             return []
 
-    async def get_weekly_stats(self, limit: int = 12) -> List[WeeklyStats]:
+    async def get_weekly_stats(
+        self, limit: int = 12, device: Optional[str] = None
+    ) -> List[WeeklyStats]:
         """Get weekly playback statistics.
 
         Args:
             limit: Number of weeks to include
+            device: Optional device name filter
 
         Returns:
             List of weekly statistics
         """
         try:
             days = limit * 7
+            device_sql, device_params = _device_clause(device)
             async with aiosqlite.connect(self.db_path) as db:
                 db.row_factory = aiosqlite.Row
-                async with db.execute("""
+                async with db.execute(f"""
                     SELECT
                         CAST(STRFTIME('%Y', timestamp_utc) AS INTEGER) as year,
                         CAST(STRFTIME('%W', timestamp_utc) AS INTEGER) as week,
@@ -236,28 +273,33 @@ class TelemetryService:
                     FROM playback_events
                     WHERE status = 'success'
                     AND DATE(timestamp_utc) >= DATE('now', '-' || ? || ' days')
+                    {device_sql}
                     GROUP BY year, week, track_name
                     ORDER BY year DESC, week DESC, play_count DESC
-                """, (days,)) as cursor:
+                """, (days, *device_params)) as cursor:
                     rows = await cursor.fetchall()
                     return [WeeklyStats(**dict(row)) for row in rows]
         except Exception as e:
             logger.error(f"Failed to get weekly stats: {e}")
             return []
 
-    async def get_monthly_stats(self, limit: int = 12) -> List[MonthlyStats]:
+    async def get_monthly_stats(
+        self, limit: int = 12, device: Optional[str] = None
+    ) -> List[MonthlyStats]:
         """Get monthly playback statistics.
 
         Args:
             limit: Number of months to include
+            device: Optional device name filter
 
         Returns:
             List of monthly statistics
         """
         try:
+            device_sql, device_params = _device_clause(device)
             async with aiosqlite.connect(self.db_path) as db:
                 db.row_factory = aiosqlite.Row
-                async with db.execute("""
+                async with db.execute(f"""
                     SELECT
                         CAST(STRFTIME('%Y', timestamp_utc) AS INTEGER) as year,
                         CAST(STRFTIME('%m', timestamp_utc) AS INTEGER) as month,
@@ -266,31 +308,39 @@ class TelemetryService:
                     FROM playback_events
                     WHERE status = 'success'
                     AND DATE(timestamp_utc) >= DATE('now', '-' || ? || ' months')
+                    {device_sql}
                     GROUP BY year, month, track_name
                     ORDER BY year DESC, month DESC, play_count DESC
-                """, (limit,)) as cursor:
+                """, (limit, *device_params)) as cursor:
                     rows = await cursor.fetchall()
                     return [MonthlyStats(**dict(row)) for row in rows]
         except Exception as e:
             logger.error(f"Failed to get monthly stats: {e}")
             return []
 
-    async def get_top_tracks(self, limit: int = 10, days: Optional[int] = None) -> List[TopTrack]:
+    async def get_top_tracks(
+        self,
+        limit: int = 10,
+        days: Optional[int] = None,
+        device: Optional[str] = None,
+    ) -> List[TopTrack]:
         """Get top played tracks.
 
         Args:
             limit: Maximum number of tracks to return
             days: Optional number of days to look back (None = all time)
+            device: Optional device name filter
 
         Returns:
             List of top tracks
         """
         try:
+            device_sql, device_params = _device_clause(device)
             async with aiosqlite.connect(self.db_path) as db:
                 db.row_factory = aiosqlite.Row
 
                 if days:
-                    query = """
+                    query = f"""
                         SELECT
                             track_name,
                             COUNT(*) as play_count,
@@ -298,24 +348,26 @@ class TelemetryService:
                         FROM playback_events
                         WHERE status = 'success'
                         AND DATE(timestamp_utc) >= DATE('now', '-' || ? || ' days')
+                        {device_sql}
                         GROUP BY track_name
                         ORDER BY play_count DESC
                         LIMIT ?
                     """
-                    params = (days, limit)
+                    params = (days, *device_params, limit)
                 else:
-                    query = """
+                    query = f"""
                         SELECT
                             track_name,
                             COUNT(*) as play_count,
                             MAX(timestamp_utc) as last_played
                         FROM playback_events
                         WHERE status = 'success'
+                        {device_sql}
                         GROUP BY track_name
                         ORDER BY play_count DESC
                         LIMIT ?
                     """
-                    params = (limit,)
+                    params = (*device_params, limit)
 
                 async with db.execute(query, params) as cursor:
                     rows = await cursor.fetchall()
@@ -324,19 +376,23 @@ class TelemetryService:
             logger.error(f"Failed to get top tracks: {e}")
             return []
 
-    async def get_heatmap_stats(self, days: int = 90) -> List[HeatmapStat]:
+    async def get_heatmap_stats(
+        self, days: int = 90, device: Optional[str] = None
+    ) -> List[HeatmapStat]:
         """Get playback counts grouped by day-of-week and 15-minute time slot.
 
         Args:
             days: Number of past days to include
+            device: Optional device name filter
 
         Returns:
             List of heatmap cells (only non-zero cells are returned)
         """
         try:
+            device_sql, device_params = _device_clause(device)
             async with aiosqlite.connect(self.db_path) as db:
                 db.row_factory = aiosqlite.Row
-                async with db.execute("""
+                async with db.execute(f"""
                     SELECT
                         CAST(STRFTIME('%w', datetime(timestamp_utc, '-8 hours')) AS INTEGER) as day_of_week,
                         CAST(STRFTIME('%H', datetime(timestamp_utc, '-8 hours')) AS INTEGER) * 4
@@ -345,16 +401,19 @@ class TelemetryService:
                     FROM playback_events
                     WHERE status = 'success'
                     AND DATE(timestamp_utc) >= DATE('now', '-' || ? || ' days')
+                    {device_sql}
                     GROUP BY day_of_week, time_slot
                     ORDER BY day_of_week, time_slot
-                """, (days,)) as cursor:
+                """, (days, *device_params)) as cursor:
                     rows = await cursor.fetchall()
                     return [HeatmapStat(**dict(row)) for row in rows]
         except Exception as e:
             logger.error(f"Failed to get heatmap stats: {e}")
             return []
 
-    async def get_evening_heatmap_stats(self, days: int = 30) -> List[EveningHeatmapStat]:
+    async def get_evening_heatmap_stats(
+        self, days: int = 30, device: Optional[str] = None
+    ) -> List[EveningHeatmapStat]:
         """Get 6pm-11pm PST playback counts by date and 15-minute slot.
 
         Timestamps are stored as UTC and shifted by -8 hours for PST.
@@ -362,14 +421,16 @@ class TelemetryService:
 
         Args:
             days: Number of past days to include
+            device: Optional device name filter
 
         Returns:
             List of non-zero evening heatmap cells
         """
         try:
+            device_sql, device_params = _device_clause(device)
             async with aiosqlite.connect(self.db_path) as db:
                 db.row_factory = aiosqlite.Row
-                async with db.execute("""
+                async with db.execute(f"""
                     SELECT
                         DATE(datetime(timestamp_utc, '-8 hours')) as play_date,
                         CAST(STRFTIME('%H', datetime(timestamp_utc, '-8 hours')) AS INTEGER) * 4
@@ -381,32 +442,41 @@ class TelemetryService:
                     AND CAST(STRFTIME('%H', datetime(timestamp_utc, '-8 hours')) AS INTEGER) * 4
                         + CAST(STRFTIME('%M', datetime(timestamp_utc, '-8 hours')) AS INTEGER) / 15
                         BETWEEN 74 AND 88
+                    {device_sql}
                     GROUP BY play_date, time_slot
                     ORDER BY play_date, time_slot
-                """, (days,)) as cursor:
+                """, (days, *device_params)) as cursor:
                     rows = await cursor.fetchall()
                     return [EveningHeatmapStat(**dict(row)) for row in rows]
         except Exception as e:
             logger.error(f"Failed to get evening heatmap stats: {e}")
             return []
 
-    async def get_health_status(self) -> HealthStatus:
+    async def get_health_status(self, device: Optional[str] = None) -> HealthStatus:
         """Get health status of the telemetry system.
+
+        Args:
+            device: Optional device name filter for event count
 
         Returns:
             Health status information
         """
         try:
+            device_sql, device_params = _device_clause(device)
             async with aiosqlite.connect(self.db_path) as db:
-                async with db.execute("SELECT COUNT(*) as count FROM playback_events") as cursor:
+                async with db.execute(
+                    f"SELECT COUNT(*) as count FROM playback_events WHERE 1=1 {device_sql}",
+                    device_params,
+                ) as cursor:
                     row = await cursor.fetchone()
                     total_events = row[0] if row else 0
 
+                scope = f" for {device}" if device else ""
                 return HealthStatus(
                     status="healthy",
                     database_connected=True,
                     total_events=total_events,
-                    message=f"Telemetry system operational with {total_events} events recorded"
+                    message=f"Telemetry system operational with {total_events} events recorded{scope}"
                 )
         except Exception as e:
             logger.error(f"Health check failed: {e}")
@@ -429,77 +499,108 @@ def get_telemetry_router(telemetry: TelemetryService) -> APIRouter:
     """
     router = APIRouter()
 
+    @router.get("/devices")
+    async def devices():
+        """Get device names that have playback history."""
+        return {"devices": await telemetry.get_known_devices()}
+
     @router.get("/health", response_model=HealthStatus)
-    async def health():
+    async def health(device: Optional[str] = Query(default=None)):
         """Get telemetry system health status."""
-        return await telemetry.get_health_status()
+        return await telemetry.get_health_status(device)
 
     @router.get("/events/recent", response_model=List[PlaybackEvent])
-    async def recent_events(limit: int = Query(default=100, ge=1, le=1000)):
+    async def recent_events(
+        limit: int = Query(default=100, ge=1, le=1000),
+        device: Optional[str] = Query(default=None),
+    ):
         """Get recent playback events.
 
         Args:
             limit: Maximum number of events to return (1-1000)
+            device: Optional device name filter
         """
-        return await telemetry.get_recent_events(limit)
+        return await telemetry.get_recent_events(limit, device)
 
     @router.get("/stats/daily", response_model=List[DailyStats])
-    async def daily_stats(limit: int = Query(default=30, ge=1, le=365)):
+    async def daily_stats(
+        limit: int = Query(default=30, ge=1, le=365),
+        device: Optional[str] = Query(default=None),
+    ):
         """Get daily playback statistics.
 
         Args:
             limit: Number of days to include (1-365)
+            device: Optional device name filter
         """
-        return await telemetry.get_daily_stats(limit)
+        return await telemetry.get_daily_stats(limit, device)
 
     @router.get("/stats/weekly", response_model=List[WeeklyStats])
-    async def weekly_stats(limit: int = Query(default=12, ge=1, le=52)):
+    async def weekly_stats(
+        limit: int = Query(default=12, ge=1, le=52),
+        device: Optional[str] = Query(default=None),
+    ):
         """Get weekly playback statistics.
 
         Args:
             limit: Number of weeks to include (1-52)
+            device: Optional device name filter
         """
-        return await telemetry.get_weekly_stats(limit)
+        return await telemetry.get_weekly_stats(limit, device)
 
     @router.get("/stats/monthly", response_model=List[MonthlyStats])
-    async def monthly_stats(limit: int = Query(default=12, ge=1, le=36)):
+    async def monthly_stats(
+        limit: int = Query(default=12, ge=1, le=36),
+        device: Optional[str] = Query(default=None),
+    ):
         """Get monthly playback statistics.
 
         Args:
             limit: Number of months to include (1-36)
+            device: Optional device name filter
         """
-        return await telemetry.get_monthly_stats(limit)
+        return await telemetry.get_monthly_stats(limit, device)
 
     @router.get("/stats/top-tracks", response_model=List[TopTrack])
     async def top_tracks(
         limit: int = Query(default=10, ge=1, le=100),
-        days: Optional[int] = Query(default=None, ge=1, le=365)
+        days: Optional[int] = Query(default=None, ge=1, le=365),
+        device: Optional[str] = Query(default=None),
     ):
         """Get most popular tracks.
 
         Args:
             limit: Maximum number of tracks to return (1-100)
             days: Optional number of days to look back (None = all time)
+            device: Optional device name filter
         """
-        return await telemetry.get_top_tracks(limit, days)
+        return await telemetry.get_top_tracks(limit, days, device)
 
     @router.get("/stats/heatmap", response_model=List[HeatmapStat])
-    async def heatmap_stats(days: int = Query(default=90, ge=1, le=365)):
+    async def heatmap_stats(
+        days: int = Query(default=90, ge=1, le=365),
+        device: Optional[str] = Query(default=None),
+    ):
         """Get play counts by day-of-week and 15-minute time slot.
 
         Args:
             days: Number of past days to include (1-365)
+            device: Optional device name filter
         """
-        return await telemetry.get_heatmap_stats(days)
+        return await telemetry.get_heatmap_stats(days, device)
 
     @router.get("/stats/evening-heatmap", response_model=List[EveningHeatmapStat])
-    async def evening_heatmap_stats(days: int = Query(default=30, ge=1, le=365)):
+    async def evening_heatmap_stats(
+        days: int = Query(default=30, ge=1, le=365),
+        device: Optional[str] = Query(default=None),
+    ):
         """Get 6pm-11pm PST play counts by date and 15-minute slot.
 
         Args:
             days: Number of past days to include (1-365)
+            device: Optional device name filter
         """
-        return await telemetry.get_evening_heatmap_stats(days)
+        return await telemetry.get_evening_heatmap_stats(days, device)
 
     @router.get("/dashboard", response_class=HTMLResponse)
     async def dashboard():

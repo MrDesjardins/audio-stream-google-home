@@ -273,11 +273,18 @@
             <div class="header-info">
                 <span id="status-indicator"></span>
                 <span id="total-events">Loading...</span>
+                <span id="viewing-device"></span>
                 <span id="last-refresh">Last refresh: Never</span>
             </div>
         </header>
 
         <div class="controls">
+            <div class="control-group">
+                <label for="device-select">Device:</label>
+                <select id="device-select">
+                    <option value="">All Devices</option>
+                </select>
+            </div>
             <div class="control-group">
                 <label for="period-select">Time Period:</label>
                 <select id="period-select">
@@ -399,13 +406,49 @@
         // Initialize dashboard
         async function init() {
             setupEventListeners();
+            await loadDevices();
             await loadData();
+        }
+
+        function deviceParam() {
+            const device = document.getElementById('device-select').value;
+            return device ? `&device=${encodeURIComponent(device)}` : '';
+        }
+
+        function updateViewingDevice() {
+            const device = document.getElementById('device-select').value;
+            const el = document.getElementById('viewing-device');
+            el.textContent = device ? `Viewing: ${device}` : 'Viewing: All Devices';
+        }
+
+        async function loadDevices() {
+            const response = await fetch(`${API_BASE}/devices`);
+            const data = await response.json();
+            const select = document.getElementById('device-select');
+            const current = select.value;
+
+            select.innerHTML = '<option value="">All Devices</option>';
+            (data.devices || []).forEach(device => {
+                const option = document.createElement('option');
+                option.value = device;
+                option.textContent = device;
+                select.appendChild(option);
+            });
+
+            if (current && [...select.options].some(opt => opt.value === current)) {
+                select.value = current;
+            }
+            updateViewingDevice();
         }
 
         // Setup event listeners
         function setupEventListeners() {
             document.getElementById('refresh-btn').addEventListener('click', loadData);
             document.getElementById('period-select').addEventListener('change', loadData);
+            document.getElementById('device-select').addEventListener('change', () => {
+                updateViewingDevice();
+                loadData();
+            });
             document.getElementById('auto-refresh-btn').addEventListener('click', toggleAutoRefresh);
         }
 
@@ -459,7 +502,7 @@
 
         // Load health status
         async function loadHealthStatus() {
-            const response = await fetch(`${API_BASE}/health`);
+            const response = await fetch(`${API_BASE}/health?${deviceParam().slice(1)}`);
             const data = await response.json();
 
             const statusIndicator = document.getElementById('status-indicator');
@@ -472,7 +515,7 @@
         // Load top tracks
         async function loadTopTracks() {
             const period = parseInt(document.getElementById('period-select').value);
-            const response = await fetch(`${API_BASE}/stats/top-tracks?limit=10&days=${period}`);
+            const response = await fetch(`${API_BASE}/stats/top-tracks?limit=10&days=${period}${deviceParam()}`);
             const tracks = await response.json();
 
             // Update stats
@@ -500,7 +543,7 @@
         // Load daily stats
         async function loadDailyStats() {
             const period = parseInt(document.getElementById('period-select').value);
-            const response = await fetch(`${API_BASE}/stats/daily?limit=${period}`);
+            const response = await fetch(`${API_BASE}/stats/daily?limit=${period}${deviceParam()}`);
             const stats = await response.json();
 
             // Group by track and prepare data
@@ -539,7 +582,7 @@
 
         // Load weekly stats
         async function loadWeeklyStats() {
-            const response = await fetch(`${API_BASE}/stats/weekly?limit=12`);
+            const response = await fetch(`${API_BASE}/stats/weekly?limit=12${deviceParam()}`);
             const stats = await response.json();
 
             // Group by track and prepare data
@@ -579,7 +622,7 @@
 
         // Load monthly stats
         async function loadMonthlyStats() {
-            const response = await fetch(`${API_BASE}/stats/monthly?limit=12`);
+            const response = await fetch(`${API_BASE}/stats/monthly?limit=12${deviceParam()}`);
             const stats = await response.json();
 
             // Group by track and prepare data
@@ -831,7 +874,7 @@
 
         async function loadHeatmap() {
             const days = document.getElementById('period-select').value;
-            const response = await fetch(`${API_BASE}/stats/heatmap?days=${days}`);
+            const response = await fetch(`${API_BASE}/stats/heatmap?days=${days}${deviceParam()}`);
             const data = await response.json();
             renderHeatmap(data);
         }
@@ -996,7 +1039,7 @@
 
         async function loadEveningHeatmap() {
             const days = parseInt(document.getElementById('period-select').value);
-            const response = await fetch(`${API_BASE}/stats/evening-heatmap?days=${days}`);
+            const response = await fetch(`${API_BASE}/stats/evening-heatmap?days=${days}${deviceParam()}`);
             const data = await response.json();
             renderEveningHeatmap(data, days);
         }
