@@ -5,6 +5,9 @@
 
 set -e  # Exit on any error
 
+# Ensure uv is in PATH (SSH non-interactive sessions don't source ~/.bashrc)
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -52,7 +55,7 @@ fi
 echo -e "${YELLOW}[2/6] Pulling Latest Changes${NC}"
 git fetch origin
 BEFORE_COMMIT=$(git rev-parse HEAD)
-git pull origin $(git branch --show-current)
+git pull origin main
 AFTER_COMMIT=$(git rev-parse HEAD)
 
 if [ "$BEFORE_COMMIT" = "$AFTER_COMMIT" ]; then

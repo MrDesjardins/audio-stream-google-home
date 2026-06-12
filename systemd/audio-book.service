@@ -1,34 +1,22 @@
 [Unit]
-Description=Audio Book Service for Jacob
+Description=Audio Stream Google Home Service
 After=network-online.target local-fs.target
 Wants=network-online.target
 Requires=network.target local-fs.target
 
 [Service]
-# Directory where your bot lives
-WorkingDirectory= /home/pdesjardins/code/audio-stream-google-home
-
-# Use your virtual environment Python binaries
-ExecStart=/home/pdesjardins/.local/bin/uv run /home/pdesjardins/code/audio-stream-google-home/src/audio-stream-google-home/main.py
+WorkingDirectory=__APP_DIR__
+ExecStart=__UV_BIN__ run __APP_DIR__/src/audio-stream-google-home/main.py
 ExecStartPre=/bin/sleep 5
 ExecStartPre=/usr/bin/ip addr
 ExecStartPre=/usr/bin/ip route
-
-# Restart on failure
 Restart=on-failure
 RestartSec=10
-
-# IAM
-User=pdesjardins
-Group=pdesjardins
-
-# Load environment variables from .env file in the repository
-EnvironmentFile=-/home/pdesjardins/code/audio-stream-google-home/.env
-
-# Optional: direct stdout/stderr to journal
+User=__SERVICE_USER__
+Group=__SERVICE_GROUP__
+EnvironmentFile=-__APP_DIR__/.env
 StandardOutput=journal
 StandardError=journal
-
 PrivateTmp=false
 ProtectSystem=off
 ProtectHome=false

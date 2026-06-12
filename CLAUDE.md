@@ -132,7 +132,35 @@ When developing on WSL, the Google Home devices need network access to the WSL i
 
 ## Production Deployment
 
-### Quick Update Script
+### First-Time Install (production server)
+
+Run on the production machine (`10.0.0.181`) as `pdesjardins`:
+
+```bash
+git clone git@github.com:MrDesjardins/audio-stream-google-home.git
+cd audio-stream-google-home
+./scripts/install-prod.sh
+```
+
+`scripts/install-prod.sh` will:
+1. Install `uv` and `avahi-utils` (for Google Cast discovery)
+2. Run `uv sync`
+3. Create/configure `.env` from `.env.example`
+4. Render and install the systemd unit from `systemd/audio-book.service`
+5. Open port 8801 in ufw (if active)
+6. Enable, start, and health-check the service
+
+### Deploy from dev machine
+
+Push to GitHub and update production in one step:
+
+```bash
+./deploy.sh
+```
+
+This pushes `main` to GitHub, SSHes to `10.0.0.181`, and runs `update.sh` on the server.
+
+### Quick Update Script (on production server)
 
 The `update.sh` script handles the complete update process:
 
@@ -141,7 +169,7 @@ The `update.sh` script handles the complete update process:
 ```
 
 This script will:
-1. Pull the latest git changes
+1. Pull the latest git changes from `main`
 2. Update dependencies with `uv sync`
 3. Verify telemetry database exists (creates on first startup if missing)
 4. Restart the systemd service
@@ -153,15 +181,13 @@ This script will:
 
 #### Systemd Service
 
-The service is deployed using systemd. Template is in `systemd/audio-book.service`:
+The service template is in `systemd/audio-book.service` (uses `__APP_DIR__`, `__SERVICE_USER__`, `__UV_BIN__` placeholders). Prefer `./scripts/install-prod.sh` to render and install it. Manual install:
 
 ```bash
-# Install service
-sudo cp systemd/audio-book.service /etc/systemd/system/audio-book.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now audio-book.service
+# Render template paths for your user, then install
+./scripts/install-prod.sh
 
-# Manage service
+# Or manage an already-installed service
 sudo systemctl start audio-book.service
 sudo systemctl stop audio-book.service
 sudo systemctl restart audio-book.service
