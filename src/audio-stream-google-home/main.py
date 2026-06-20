@@ -3,11 +3,14 @@ from fastapi.concurrency import asynccontextmanager
 from fastapi.staticfiles import StaticFiles
 import pychromecast
 from pydantic import BaseModel
+import asyncio
+import functools
 import os
 import time
 import logging
 import subprocess
 import re
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote
 import uvicorn
 from dotenv import load_dotenv
@@ -41,6 +44,16 @@ else:
 
 GOOGLE_HOME_PORT = 8009
 MP3_ROUTE = "/mp3"
+CAST_CONNECT_TRIES = int(os.getenv("AB_CAST_CONNECT_TRIES", "2"))
+CAST_CONNECT_RETRY_WAIT = float(os.getenv("AB_CAST_CONNECT_RETRY_WAIT", "2"))
+CAST_CONNECT_TIMEOUT = float(os.getenv("AB_CAST_CONNECT_TIMEOUT", "5"))
+CAST_WAIT_TIMEOUT = float(os.getenv("AB_CAST_WAIT_TIMEOUT", "8"))
+CAST_CONTROLLER_TIMEOUT = float(os.getenv("AB_CAST_CONTROLLER_TIMEOUT", "8"))
+CAST_REQUEST_TIMEOUT = float(os.getenv("AB_CAST_REQUEST_TIMEOUT", "35"))
+CAST_PLAY_RETRIES = int(os.getenv("AB_CAST_PLAY_RETRIES", "3"))
+CAST_PLAY_RETRY_WAIT = float(os.getenv("AB_CAST_PLAY_RETRY_WAIT", "2"))
+CAST_WORKERS = int(os.getenv("AB_CAST_WORKERS", "2"))
+DEVICE_REFRESH_TIMEOUT = float(os.getenv("AB_DEVICE_REFRESH_TIMEOUT", "12"))
 
 DEFAULT_DEVICE_IPS = {
     "Jacob": "10.0.0.55",
@@ -222,15 +235,21 @@ logger.info(f"Starting in {ENV} mode on {IP_SERVER}:{PORT_SERVER}, serving MP3s 
 # Chromecast globals (populated on startup)
 cast = None
 mc = None
+cast_executor = ThreadPoolExecutor(max_workers=CAST_WORKERS, thread_name_prefix="cast")
+
+
+class CastPlaybackError(RuntimeError):
+    """Raised when a bounded Chromecast operation fails."""
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Init
     await startup_event(app)
-    yield
-    # Clean up
-    # Nothing for now
+    try:
+        yield
+    finally:
+        cast_executor.shutdown(wait=False, cancel_futures=True)
 
 async def startup_event(app: FastAPI):
     """Discover Chromecast using CastBrowser at startup."""
@@ -273,6 +292,67 @@ def get_mp3_file_names():
     except Exception as e:
         logger.exception("Failed to list tracks in %s: %s", MP3_FOLDER, e)
         return []
+
+
+def _play_on_cast_blocking(device_ip: str, track_url: str, safe_filename: str):
+    """Run pychromecast operations off the event loop with explicit timeouts."""
+    global cast, mc
+    local_cast = None
+    local_mc = None
+    try:
+        local_cast = pychromecast.get_chromecast_from_host(
+            (device_ip, GOOGLE_HOME_PORT, None, None, None),
+            tries=CAST_CONNECT_TRIES,
+            retry_wait=CAST_CONNECT_RETRY_WAIT,
+            timeout=CAST_CONNECT_TIMEOUT,
+        )
+        local_cast.wait(timeout=CAST_WAIT_TIMEOUT)
+        local_mc = local_cast.media_controller
+        logger.info("Connected to Chromecast at %s (%s)", device_ip, local_cast.cast_info)
+        local_mc.block_until_active(timeout=CAST_CONTROLLER_TIMEOUT)
+        logger.info("Media controller ready for %s", device_ip)
+    except Exception as e:
+        cast = None
+        mc = None
+        raise CastPlaybackError(f"Connection failed: {e}") from e
+
+    cast = local_cast
+    mc = local_mc
+
+    try:
+        local_mc.stop()
+        logger.info("Stopped any existing playback on %s", device_ip)
+        time.sleep(1)
+    except Exception as e:
+        logger.warning("Could not stop existing playback (may not be playing anything): %s", e)
+
+    logger.info("Waiting to play media %s", track_url)
+    for attempt in range(CAST_PLAY_RETRIES):
+        try:
+            logger.info(
+                "Attempting to play media %s (attempt %s/%s)",
+                track_url,
+                attempt + 1,
+                CAST_PLAY_RETRIES,
+            )
+            local_mc.play_media(
+                track_url,
+                "audio/mp3",
+                title=f"Playing {safe_filename}",
+                subtitles="From audio Stream Server",
+            )
+            logger.info("Successfully sent play command for %s", safe_filename)
+            return
+        except pychromecast.error.NotConnected as e:
+            logger.warning("Cast not ready, retrying...")
+            if attempt < CAST_PLAY_RETRIES - 1:
+                time.sleep(CAST_PLAY_RETRY_WAIT)
+                continue
+            raise CastPlaybackError(
+                f"Cast not ready after {CAST_PLAY_RETRIES} retries"
+            ) from e
+        except Exception as e:
+            raise CastPlaybackError(f"Playback failed: {e}") from e
     
 @app.get("/")
 async def root():
@@ -303,105 +383,100 @@ def list_tracks():
     
 @app.post("/play")
 async def play(req: PlayRequest, request: Request):
-    """Play an MP3 file by filename (track).
-
-    Validates the requested filename, checks it exists in `MP3_FOLDER`,
-    and sends the URL to the Chromecast media controller.
-    """
+    """Play an MP3 file by filename (track)."""
     track = req.track
-    refresh_device_ips()
-    device_ip = DEVICE_IPS.get(req.device)
-    if not device_ip:
-        raise HTTPException(status_code=400, detail="Invalid device name")
-    
-    logger.info(f"Play request received for track: {track} on device: {req.device} ({device_ip})")
-    global cast, mc
-    try:
-        cast = pychromecast.get_chromecast_from_host((device_ip, GOOGLE_HOME_PORT, None, None, None), tries=3, retry_wait=10)  # blocking=True waits for connection
-        cast.wait()
-        mc = cast.media_controller
-        logger.info(f"Connected to Chromecast at {device_ip} ({cast.cast_info})")
-        # Wait for media controller to be ready
-        mc.block_until_active(timeout=10)
-        logger.info(f"Media controller ready for {device_ip}")
-    except Exception as e:
-        logger.exception(f"Failed to connect to Chromecast at {device_ip}")
-        cast = None
-        mc = None
-        # Record telemetry for connection failure
-        try:
-            await app.telemetry.record_playback(
-                track_name=track,
-                device_name=req.device,
-                device_ip=device_ip,
-                status="failed",
-                error_message=f"Connection failed: {str(e)}"
-            )
-        except Exception:
-            logger.exception("Failed to record telemetry for connection failure")
-    
     safe_filename = os.path.basename(track)
     safe_filename_with_ext = safe_filename + ".mp3"
     if not safe_filename:
         raise HTTPException(status_code=400, detail="Invalid track name")
+
     files = get_mp3_file_names()
     if safe_filename not in files:
         raise HTTPException(status_code=404, detail="Track not found")
+
     local_path = os.path.join(MP3_FOLDER, safe_filename_with_ext)
-    logger.info(f"Requested track: {track}, safe filename: {safe_filename_with_ext}, local path: {local_path}")
-        
+    logger.info(
+        "Requested track: %s, safe filename: %s, local path: %s",
+        track,
+        safe_filename_with_ext,
+        local_path,
+    )
     if not os.path.isfile(local_path):
         raise HTTPException(status_code=404, detail="Track not found")
 
+    try:
+        await asyncio.wait_for(
+            asyncio.to_thread(refresh_device_ips),
+            timeout=DEVICE_REFRESH_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "Device discovery timed out after %ss; using cached device list",
+            DEVICE_REFRESH_TIMEOUT,
+        )
+
+    device_ip = DEVICE_IPS.get(req.device)
+    if not device_ip:
+        raise HTTPException(status_code=400, detail="Invalid device name")
+
+    logger.info(
+        "Play request received for track: %s on device: %s (%s)",
+        track,
+        req.device,
+        device_ip,
+    )
     track_url = f"http://{IP_SERVER.rstrip('/')}:{PORT_SERVER}{MP3_ROUTE}/{quote(safe_filename_with_ext)}"
 
-    if mc is None or cast is None:
-        raise HTTPException(status_code=503, detail="Cast device not ready")
-    
-    # Stop any currently playing media first
+    loop = asyncio.get_running_loop()
+    play_job = functools.partial(
+        _play_on_cast_blocking,
+        device_ip,
+        track_url,
+        safe_filename,
+    )
     try:
-        mc.stop()
-        logger.info(f"Stopped any existing playback on {device_ip}")
-        time.sleep(1)  # Give the device a moment to stop
-    except Exception as e:
-        logger.warning(f"Could not stop existing playback (may not be playing anything): {e}")
-
-    logger.info("Waiting to play media %s", track_url)
-    MAX_RETRIES = 5
-    for attempt in range(MAX_RETRIES):
+        await asyncio.wait_for(
+            loop.run_in_executor(cast_executor, play_job),
+            timeout=CAST_REQUEST_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        message = f"Cast operation timed out after {CAST_REQUEST_TIMEOUT:g}s"
+        logger.exception(message)
         try:
-            logger.info(f"Attempting to play media {track_url} (attempt {attempt + 1}/{MAX_RETRIES})")
-            mc.play_media(track_url, "audio/mp3", title=f"Playing {safe_filename}", subtitles=f"From audio Stream Server")
-            logger.info(f"Successfully sent play command for {safe_filename}")
-            # Record successful playback
-            try:
-                await app.telemetry.record_playback(
-                    track_name=safe_filename,
-                    device_name=req.device,
-                    device_ip=device_ip,
-                    status="success"
-                )
-            except Exception:
-                logger.exception("Failed to record telemetry for successful playback")
-            break
-        except pychromecast.error.NotConnected as e:
-            logger.error("Cast not ready, retrying...")
-            if attempt < MAX_RETRIES - 1:
-                time.sleep(3)
-            else:
-                logger.exception("Failed to play media %s after retries", track_url)
-                # Record telemetry for playback failure
-                try:
-                    await app.telemetry.record_playback(
-                        track_name=safe_filename,
-                        device_name=req.device,
-                        device_ip=device_ip,
-                        status="failed",
-                        error_message=f"Cast not ready after {MAX_RETRIES} retries"
-                    )
-                except Exception:
-                    logger.exception("Failed to record telemetry for playback failure")
-                raise HTTPException(status_code=503, detail="Cast device not ready")
+            await app.telemetry.record_playback(
+                track_name=safe_filename,
+                device_name=req.device,
+                device_ip=device_ip,
+                status="failed",
+                error_message=message,
+            )
+        except Exception:
+            logger.exception("Failed to record telemetry for cast timeout")
+        raise HTTPException(status_code=504, detail=message)
+    except CastPlaybackError as e:
+        message = str(e)
+        logger.exception("Cast playback failed for %s on %s", safe_filename, device_ip)
+        try:
+            await app.telemetry.record_playback(
+                track_name=safe_filename,
+                device_name=req.device,
+                device_ip=device_ip,
+                status="failed",
+                error_message=message,
+            )
+        except Exception:
+            logger.exception("Failed to record telemetry for playback failure")
+        raise HTTPException(status_code=503, detail=message)
+
+    try:
+        await app.telemetry.record_playback(
+            track_name=safe_filename,
+            device_name=req.device,
+            device_ip=device_ip,
+            status="success",
+        )
+    except Exception:
+        logger.exception("Failed to record telemetry for successful playback")
 
     return {"status": "ok", "track_url": track_url}
 
