@@ -10,6 +10,7 @@ import time
 import logging
 import subprocess
 import re
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote
 import uvicorn
@@ -236,10 +237,56 @@ logger.info(f"Starting in {ENV} mode on {IP_SERVER}:{PORT_SERVER}, serving MP3s 
 cast = None
 mc = None
 cast_executor = ThreadPoolExecutor(max_workers=CAST_WORKERS, thread_name_prefix="cast")
+cast_lock = threading.Lock()
+active_casts = set()
 
 
 class CastPlaybackError(RuntimeError):
     """Raised when a bounded Chromecast operation fails."""
+
+
+def _disconnect_cast_client(cast_client, timeout=2):
+    if not cast_client:
+        return
+    try:
+        cast_client.disconnect(timeout=timeout)
+    except TypeError:
+        try:
+            cast_client.disconnect()
+        except Exception:
+            logger.exception("Failed to disconnect Chromecast client")
+    except Exception:
+        logger.exception("Failed to disconnect Chromecast client")
+
+
+def _replace_active_cast(cast_client):
+    global cast, mc
+    stale_casts = []
+    with cast_lock:
+        if cast and cast is not cast_client:
+            stale_casts.append(cast)
+            active_casts.discard(cast)
+        cast = cast_client
+        mc = cast_client.media_controller if cast_client else None
+        if cast_client:
+            active_casts.add(cast_client)
+
+    for stale_cast in stale_casts:
+        _disconnect_cast_client(stale_cast)
+
+
+def _disconnect_all_casts():
+    global cast, mc
+    with cast_lock:
+        casts_to_disconnect = list(active_casts)
+        if cast and cast not in active_casts:
+            casts_to_disconnect.append(cast)
+        active_casts.clear()
+        cast = None
+        mc = None
+
+    for cast_client in casts_to_disconnect:
+        _disconnect_cast_client(cast_client)
 
 
 @asynccontextmanager
@@ -249,6 +296,7 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        _disconnect_all_casts()
         cast_executor.shutdown(wait=False, cancel_futures=True)
 
 async def startup_event(app: FastAPI):
@@ -296,7 +344,6 @@ def get_mp3_file_names():
 
 def _play_on_cast_blocking(device_ip: str, track_url: str, safe_filename: str):
     """Run pychromecast operations off the event loop with explicit timeouts."""
-    global cast, mc
     local_cast = None
     local_mc = None
     try:
@@ -312,12 +359,10 @@ def _play_on_cast_blocking(device_ip: str, track_url: str, safe_filename: str):
         local_mc.block_until_active(timeout=CAST_CONTROLLER_TIMEOUT)
         logger.info("Media controller ready for %s", device_ip)
     except Exception as e:
-        cast = None
-        mc = None
+        _disconnect_cast_client(local_cast)
         raise CastPlaybackError(f"Connection failed: {e}") from e
 
-    cast = local_cast
-    mc = local_mc
+    _replace_active_cast(local_cast)
 
     try:
         local_mc.stop()
