@@ -45,16 +45,19 @@ else:
 
 GOOGLE_HOME_PORT = 8009
 MP3_ROUTE = "/mp3"
-CAST_CONNECT_TRIES = int(os.getenv("AB_CAST_CONNECT_TRIES", "2"))
+CAST_CONNECT_TRIES = max(1, int(os.getenv("AB_CAST_CONNECT_TRIES", "5")))
 CAST_CONNECT_RETRY_WAIT = float(os.getenv("AB_CAST_CONNECT_RETRY_WAIT", "2"))
 CAST_CONNECT_TIMEOUT = float(os.getenv("AB_CAST_CONNECT_TIMEOUT", "5"))
 CAST_WAIT_TIMEOUT = float(os.getenv("AB_CAST_WAIT_TIMEOUT", "8"))
 CAST_CONTROLLER_TIMEOUT = float(os.getenv("AB_CAST_CONTROLLER_TIMEOUT", "8"))
-CAST_REQUEST_TIMEOUT = float(os.getenv("AB_CAST_REQUEST_TIMEOUT", "35"))
-CAST_PLAY_RETRIES = int(os.getenv("AB_CAST_PLAY_RETRIES", "3"))
+CAST_REQUEST_TIMEOUT = float(os.getenv("AB_CAST_REQUEST_TIMEOUT", "120"))
+CAST_PLAY_RETRIES = max(1, int(os.getenv("AB_CAST_PLAY_RETRIES", "3")))
 CAST_PLAY_RETRY_WAIT = float(os.getenv("AB_CAST_PLAY_RETRY_WAIT", "2"))
 CAST_WORKERS = int(os.getenv("AB_CAST_WORKERS", "2"))
-DEVICE_REFRESH_TIMEOUT = float(os.getenv("AB_DEVICE_REFRESH_TIMEOUT", "12"))
+DEVICE_REFRESH_TIMEOUT = float(os.getenv("AB_DEVICE_REFRESH_TIMEOUT", "35"))
+DEVICE_DISCOVERY_RETRIES = max(1, int(os.getenv("AB_DEVICE_DISCOVERY_RETRIES", "3")))
+DEVICE_DISCOVERY_RETRY_WAIT = float(os.getenv("AB_DEVICE_DISCOVERY_RETRY_WAIT", "1.5"))
+DEVICE_DISCOVERY_AVAHI_TIMEOUT = float(os.getenv("AB_DEVICE_DISCOVERY_AVAHI_TIMEOUT", "10"))
 
 DEFAULT_DEVICE_IPS = {
     "Jacob": "10.0.0.55",
@@ -80,7 +83,7 @@ def discover_device_ips_from_avahi():
             capture_output=True,
             text=True,
             check=False,
-            timeout=10,
+            timeout=DEVICE_DISCOVERY_AVAHI_TIMEOUT,
         )
     except FileNotFoundError:
         logger.warning("avahi-browse not found; using fallback static DEVICE_IPS")
@@ -199,9 +202,6 @@ def discover_device_ips_from_avahi():
     # Keep compatibility with existing short aliases in requests.
     normalized_discovered = {_normalize_name(k): v for k, v in discovered.items()}
     
-    if normalized_discovered:
-        return normalized_discovered
-
     for alias in DEFAULT_DEVICE_IPS.keys():
         key = _normalize_name(alias)
         if key in normalized_discovered:
@@ -220,7 +220,19 @@ def discover_device_ips_from_avahi():
 def refresh_device_ips():
     """Refresh DEVICE_IPS from Avahi; keep static fallback when needed."""
     global DEVICE_IPS
-    discovered = discover_device_ips_from_avahi()
+    discovered = {}
+    for attempt in range(DEVICE_DISCOVERY_RETRIES):
+        discovered = discover_device_ips_from_avahi()
+        if discovered:
+            break
+        if attempt < DEVICE_DISCOVERY_RETRIES - 1:
+            logger.warning(
+                "No Google Cast devices discovered via Avahi; retrying (%s/%s)",
+                attempt + 1,
+                DEVICE_DISCOVERY_RETRIES,
+            )
+            time.sleep(DEVICE_DISCOVERY_RETRY_WAIT)
+
     if discovered:
         DEVICE_IPS = discovered
         logger.info("Discovered %d Google Cast devices via Avahi", len(DEVICE_IPS))
@@ -346,21 +358,38 @@ def _play_on_cast_blocking(device_ip: str, track_url: str, safe_filename: str):
     """Run pychromecast operations off the event loop with explicit timeouts."""
     local_cast = None
     local_mc = None
-    try:
-        local_cast = pychromecast.get_chromecast_from_host(
-            (device_ip, GOOGLE_HOME_PORT, None, None, None),
-            tries=CAST_CONNECT_TRIES,
-            retry_wait=CAST_CONNECT_RETRY_WAIT,
-            timeout=CAST_CONNECT_TIMEOUT,
-        )
-        local_cast.wait(timeout=CAST_WAIT_TIMEOUT)
-        local_mc = local_cast.media_controller
-        logger.info("Connected to Chromecast at %s (%s)", device_ip, local_cast.cast_info)
-        local_mc.block_until_active(timeout=CAST_CONTROLLER_TIMEOUT)
-        logger.info("Media controller ready for %s", device_ip)
-    except Exception as e:
-        _disconnect_cast_client(local_cast)
-        raise CastPlaybackError(f"Connection failed: {e}") from e
+    last_error = None
+    for attempt in range(CAST_CONNECT_TRIES):
+        try:
+            local_cast = pychromecast.get_chromecast_from_host(
+                (device_ip, GOOGLE_HOME_PORT, None, None, None),
+                tries=1,
+                retry_wait=CAST_CONNECT_RETRY_WAIT,
+                timeout=CAST_CONNECT_TIMEOUT,
+            )
+            local_cast.wait(timeout=CAST_WAIT_TIMEOUT)
+            local_mc = local_cast.media_controller
+            logger.info("Connected to Chromecast at %s (%s)", device_ip, local_cast.cast_info)
+            local_mc.block_until_active(timeout=CAST_CONTROLLER_TIMEOUT)
+            logger.info("Media controller ready for %s", device_ip)
+            break
+        except Exception as e:
+            last_error = e
+            _disconnect_cast_client(local_cast)
+            local_cast = None
+            if attempt < CAST_CONNECT_TRIES - 1:
+                logger.warning(
+                    "Connection to Chromecast at %s failed; retrying (%s/%s): %s",
+                    device_ip,
+                    attempt + 1,
+                    CAST_CONNECT_TRIES,
+                    e,
+                )
+                time.sleep(CAST_CONNECT_RETRY_WAIT)
+                continue
+            raise CastPlaybackError(
+                f"Connection failed after {CAST_CONNECT_TRIES} attempts: {last_error}"
+            ) from e
 
     _replace_active_cast(local_cast)
 
@@ -461,6 +490,13 @@ async def play(req: PlayRequest, request: Request):
         )
 
     device_ip = DEVICE_IPS.get(req.device)
+    if not device_ip:
+        normalized_requested_device = re.sub(r"[^a-z0-9]+", " ", req.device.lower()).strip()
+        for known_device, known_ip in DEVICE_IPS.items():
+            normalized_known_device = re.sub(r"[^a-z0-9]+", " ", known_device.lower()).strip()
+            if normalized_known_device == normalized_requested_device:
+                device_ip = known_ip
+                break
     if not device_ip:
         raise HTTPException(status_code=400, detail="Invalid device name")
 
